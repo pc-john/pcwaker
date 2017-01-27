@@ -1,0 +1,8 @@
+/public_html/
+/templates/
+
+buildbot.tac
+master.cfg.sample
+state.sqlite
+
+*.pyc
