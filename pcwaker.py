@@ -114,8 +114,6 @@ while True:
    if msgType==MSG_EOF:
       break
    if msgType==MSG_WAKER:
-      print('new data:')
-      print(data)
       print(pickle.loads(data),end='')
    if msgType==MSG_LOG and not machineReadable:
       print(data.decode(errors='replace'),end='')
