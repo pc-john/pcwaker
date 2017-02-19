@@ -8,17 +8,17 @@
 # pcwakerd.py --init-gpio
 #
 #    Initializes GPIO pins to their default state and exits
-#    (This is performed on any wakerd.py start anyway. But
-#    sometimes we do not want to start wakerd.py on system boot,
+#    (This is performed on any pcwakerd.py start anyway. But
+#    sometimes we do not want to start pcwakerd.py on system boot,
 #    but we might want to initialize GPIO pins.)
 #
 
 #
-# waker.py daemon [start|restart|stop|init-gpio]
+# pcwaker.py daemon [start|restart|stop|init-gpio]
 #
 #    Controls pcwakerd.py daemon.
 #
-# waker.py status [computer-names]
+# pcwaker.py status [--machine-readable] [computer-names]
 #
 #    Prints the status of specified computer and OS booted as
 #    some computers have more OS installed. Status can be:
@@ -26,24 +26,24 @@
 #    If no computer names are given, all configured computers
 #    are printed.
 #
-# waker.py list
+# pcwaker.py list
 #
 #    Prints all configured computers that this utility is expected to control
 #    and all OS installed on them configured to be used with this utility.
 #    NOT IMPLEMENTED YET.
 #
-# waker.py start [computer-name] [os-to-boot]
+# pcwaker.py start [computer-name] [os-to-boot]
 #
 #    Powers on the computer. Does nothing if the computer is already running.
 #    The powering-on procedure is applied only if the computer is in OFF state.
 #    Nothing is done in ON, ON-AND-BUSY and BOOTING states.
 #    Failure is returned if the computer state is SHUTTING-DOWN.
 #
-# waker.py stop [computer-name]
+# pcwaker.py stop [computer-name]
 #
 #    Switches the computer off.
 #
-# waker.py command [computer-name] [command-to-run] [command-parameters]
+# pcwaker.py command [computer-name] [command-to-run] [command-parameters]
 #
 #    Executes the command on the computer.
 #
@@ -166,12 +166,12 @@ class WorkerThread(threading.Thread):
 
          msgType,data=self.stream.recv(timeout=1.0)
 
-         # process messages from waker.py
+         # process messages from pcwaker.py
          if msgType==MSG_WAKER:
 
             # decode data
             params=pickle.loads(data)
-            wlog.debug('Message received from waker: '+str(params))
+            wlog.debug('Message received from pcwaker: '+str(params))
 
             # ignore empty messages
             if len(params)==0:
@@ -208,19 +208,33 @@ class WorkerThread(threading.Thread):
 
             # status of computer(s)
             elif params[0]=='status':
-               if len(params)==1:
+
+               # parse --machine-readable if present
+               p=params[1:]
+               machineReadable=len(p)>0 and p[0]=='--machine-readable'
+               if machineReadable:
+                  p=p[1:]
+
+               # get computer list
+               if len(p)==0:
                   list=computerList
                else:
                   list=[]
-                  for name in params[1:]:
+                  for name in p:
                      pc=getComputer(name)
                      if pc==None:
                         wlog.critical(name+' is not a configured computer.')
                      else:
                         list.append(pc)
-               for pc in list:
-                  wlog.critical('Computer '+pc.name+':')
-                  wlog.critical('   Status: '+statusToString(getComputerStatus(pc)))
+
+               # print result
+               if machineReadable:
+                  for pc in list:
+                     self.stream.send(MSG_WAKER,pickle.dumps(statusToString(getComputerStatus(pc)),protocol=2))
+               else:
+                  for pc in list:
+                     wlog.critical('Computer '+pc.name+':')
+                     wlog.critical('   Status: '+statusToString(getComputerStatus(pc)))
                break
 
             # start computer
@@ -284,7 +298,7 @@ class WorkerThread(threading.Thread):
                      if status==StatusOn:
                         # if on, stop it
                         wlog.info('Stopping computer '+pc.name+'...')
-                        pc.stream.send(MSG_COMPUTER,pickle.dumps(['shutdown']))
+                        pc.stream.send(MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
                         pc.shutdownRequested=True
                         #if GPIO.input(pc.pinPowerSense)==0:
                            #wlog.critical('Failed to start computer '+pc.name+'.')
@@ -302,17 +316,20 @@ class WorkerThread(threading.Thread):
             # execute command on computer
             elif params[0]=='command':
                if len(params)==1:
-                  wlog.error('Error: No computer(s) specified.')
+                  wlog.error('Error: No computer specified.')
                else:
                   if len(params)==2:
-                     wlog.error('Error: No command specified.')
+                     wlog.error('Error: No computer or command specified. Use \"command computer-name command-and-parameters\".')
                   else:
                      pc=getComputer(params[1])
                      if pc==None:
-                        wlog.critical(name+' is not a configured computer.')
+                        wlog.critical(params[1]+' is not a configured computer.')
                      else:
-                        wlog.info('Sending command to params[1] to be executed (command: '+params[2:]+').')
-                        pc.stream.send(MSG_COMPUTER,pickle.dumps(['command']+params[2:]))
+                        if pc.stream is None:
+                           wlog.error('Error: Can not send command to the computer that is not in ON state (computer:'+pc.name+').')
+                        else:
+                           wlog.info('Sending command to '+params[1]+' to be executed (command: '+str(params[2:])+').')
+                           pc.stream.send(MSG_COMPUTER,pickle.dumps(['command']+params[2:],protocol=2))
                break
 
             # unknown command
@@ -381,7 +398,7 @@ class WorkerThread(threading.Thread):
          self.associatedComputer=None
 
       # close connection
-      # (close of connection terminating wakerd.py is postponed, it will be closed by main thread)
+      # (close of connection terminating pcwakerd.py is postponed, it will be closed by main thread)
       if wlog!=shutdownLog:
          if self.stream:
             wlog.removeHandler(wlogHandler)
@@ -433,7 +450,7 @@ def signalHandler(signum,stackframe):
 
 
 # init argument parser
-argParser=argparse.ArgumentParser(description='Waker daemon for switching on computers, '
+argParser=argparse.ArgumentParser(description='PCWaker daemon for switching on computers, '
                                   'monitoring them and safely shutting them down.')
 argParser.add_argument('--debug',help='Sets debug level to "debug". '
                                       'Much of internal information will be printed.',
@@ -473,7 +490,7 @@ if os.isatty(sys.stdout.fileno()) or args.init_print_log:
    rootLog.debug('Log brought up and output to stdout was added.')
 log=logging.getLogger('main')
 log.setLevel(rootLog.level)
-log.critical('wakerd.py started with arguments: '+str(sys.argv[1:])+
+log.critical('pcwakerd.py started with arguments: '+str(sys.argv[1:])+
              ' and debug level '+logging.getLevelName(log.level)+'.')
 
 # create listeningPortFile
@@ -608,7 +625,7 @@ if restartFlag:
 
    # restart the process
    log.info('Restarting process...')
-   p=subprocess.Popen(["./wakerd.py","--init-print-log"],stdout=subprocess.PIPE)
+   p=subprocess.Popen(["./pcwakerd.py","--init-print-log"],stdout=subprocess.PIPE)
 
    # write new process output to log
    # (but first remove termintating '\n')

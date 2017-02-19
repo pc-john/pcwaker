@@ -7,10 +7,10 @@ listeningPortFilePath=''
 logFilePath='/buildbot-master/pcwakerd.log'
 
 # message ids used for stream message content identification
-MSG_EOF=0
-MSG_LOG=1
-MSG_WAKER=2
-MSG_COMPUTER=3
+MSG_EOF=0          # opposite side closed the stream and will only receive until we sent EOF as well
+MSG_LOG=1          # log messages that could be printed on the screen for the user or ignored
+MSG_WAKER=2        # messages exchanged between pcwaker.py (user interacting utility) and pcwakerd.py (daemon)
+MSG_COMPUTER=3     # messages exchanged bettwen pcwaker_client.py (client computer) and pcwakerd.py (daemon)
 
 
 

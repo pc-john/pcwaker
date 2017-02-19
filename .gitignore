@@ -1,8 +1,14 @@
 /public_html/
 /templates/
+/GPUEngine-build-*/
+/GPUEngine-deps/
+/GPUEngine-src/
 
 buildbot.tac
 master.cfg.sample
 state.sqlite
 
 *.pyc
+*.log
+*.log.1
+*.pid

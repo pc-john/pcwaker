@@ -98,6 +98,8 @@ if os.name=='nt':
       version='.'.join(map(str,sys.version_info))
       print('Error: pywin32 not installed for Python '+version+'.')
 
+# outer main loop
+# handling reconnects if connection is broken
 print('Starting pcwaker client daemon. Use Ctrl-C to stop the daemon.\n'
       'Connecting to the server '+pcwakerServerAddress[0]+':'+str(pcwakerServerAddress[1])+'...')
 exitRequested=False
@@ -117,8 +119,9 @@ while not exitRequested:
    # send parameters to daemon
    hostName=socket.gethostname()
    print('Sending \"Got alive\" message (this computer name: '+hostName+').')
-   stream.send(MSG_COMPUTER,pickle.dumps(['Got alive',hostName]))
+   stream.send(MSG_COMPUTER,pickle.dumps(['Got alive',hostName],protocol=2))
 
+   # inner main loop
    while True:
 
       # receive message
@@ -147,15 +150,16 @@ while not exitRequested:
                wlog.error('Error: No command specified.')
             else:
                try:
+                  print('Command execution request: '+params[1:]+'.')
                   p=subprocess.Popen(params[1:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
                   t=p.stdout.read()
                   t.wait()
                   if t.returncode==0:
-                     wlog.info('Command '+params[1:]+' succeed.')
+                     print('Command '+params[1:]+' succeed.')
                   else:
-                     wlog.error('Command '+params[1:]+' returned error code '+t.returncode+'.')
+                     print('Command '+params[1:]+' returned error code '+t.returncode+'.')
                except OSError:
-                  wlog.error('Error: Failed to run command: '+params[1:]+'.')
+                  print('Error: Failed to run command: '+params[1:]+'.')
 
          # unknown param
          else:

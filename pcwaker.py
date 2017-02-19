@@ -61,12 +61,15 @@ if len(sys.argv)>=2 and sys.argv[1]=='daemon':
       subprocess.Popen([daemonFileName,"--init-gpio"]+sys.argv[3:])
       exit(0)
 
+# parse --machine-readable if present
+machineReadable=len(sys.argv)>=3 and sys.argv[1]=='status' and sys.argv[2]=='--machine-readable'
+
 # open listeningPortFile
 if listeningPortFilePath:
    try:
       listeningPortFile=open(listeningPortFilePath,mode='r')
    except FileNotFoundError:
-      print('Error: Can not connect to wakerd process. It might be not running\n'
+      print('Error: Can not connect to pcwakerd process. It might be not running\n'
             '   or can not access file \"',listeningPortFilePath,'\".',sep='')
       exit(1)
    except OSError as e:
@@ -102,15 +105,19 @@ if r!=0:
 # send parameters to daemon
 stream=Stream(s)
 a=sys.argv[1:]
-data=pickle.dumps(a)
+data=pickle.dumps(a,protocol=2)
 stream.send(MSG_WAKER,data)
 
 # receive and print response
 while True:
    msgType,data=stream.recv()
    if msgType==MSG_EOF:
-      break;
-   if msgType==MSG_LOG:
+      break
+   if msgType==MSG_WAKER:
+      print('new data:')
+      print(data)
+      print(pickle.loads(data),end='')
+   if msgType==MSG_LOG and not machineReadable:
       print(data.decode(errors='replace'),end='')
 
 # finalize application
