@@ -139,7 +139,12 @@ while not exitRequested:
          # shutdown message
          if params[0]=='shutdown':
             print('Shutting down...')
-            subprocess.call(["shutdown","-s","-t","60"])
+            if sys.platform.startswith('cygwin'):
+               subprocess.call(['shutdown','--shutdown','60'])
+            elif sys.platform.startswith('win32'):
+               subprocess.call(['shutdown','-s','-t','60'])
+            else:
+               print('Error: No shutdown code for this operating system.')
             print('Done.')
             exitRequested=True
             break
@@ -147,19 +152,39 @@ while not exitRequested:
          # execute command on this computer
          elif params[0]=='command':
             if len(params)==1:
-               wlog.error('Error: No command specified.')
+               print('Error: No command specified.')
             else:
                try:
-                  print('Command execution request: '+params[1:]+'.')
+
+                  # run command
+                  print('Command execution request: '+str(params[1:])+'.')
                   p=subprocess.Popen(params[1:],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-                  t=p.stdout.read()
-                  t.wait()
-                  if t.returncode==0:
-                     print('Command '+params[1:]+' succeed.')
+                  t,_=p.communicate()
+
+                  # print return code
+                  if p.returncode==0:
+                     print('Command '+str(params[1:])+' succeed',end='')
                   else:
-                     print('Command '+params[1:]+' returned error code '+t.returncode+'.')
+                     print('Command '+str(params[1:])+' returned error code '+p.returncode,end='')
+
+                  # print output
+                  if(len(t)==0):
+                     print('.')
+                  else:
+
+                     # decode string
+                     t=t.decode("utf-8")
+
+                     # remove ending new line
+                     l=len(t)-1
+                     if(t[l]=='\n'):
+                        t=t[:l]
+
+                     # print output
+                     print(' with output:\n'+t)
+
                except OSError:
-                  print('Error: Failed to run command: '+params[1:]+'.')
+                  print('Error: Failed to run command: '+str(params[1:])+'.')
 
          # unknown param
          else:

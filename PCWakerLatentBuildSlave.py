@@ -75,8 +75,17 @@ class PCWakerLatentBuildSlave(AbstractLatentBuildSlave):
          command=['status','--machine-readable',self.slavename]
          r,data=self.pcwaker_send_single_command(command)
          if data=='ON':
+
+            # print success
             log.msg('Computer '+self.slavename+' started.')
+
+            # start buildslave
+            command=['command',self.slavename,'buildslave','start','/cygdrive/c/buildbot-slave']
+            self.pcwaker_send_single_command(command)
+
+            # return success
             return True
+
          time.sleep(0.5)
 
       # machine did not came on-line in time
@@ -91,9 +100,7 @@ class PCWakerLatentBuildSlave(AbstractLatentBuildSlave):
 
    def _stop_instance(self,fast):
 
-      #command=['command','/usr/bin/buildslave','stop']
-      #self.pcwaker_send_single_command(command)
-      command=['command',self.slavename,'c:\\cygwin\\bin\\xargs.exe']
+      command=['command',self.slavename,'/usr/bin/buildslave','stop']
       self.pcwaker_send_single_command(command)
       command=['stop',self.slavename]
       self.pcwaker_send_single_command(command)
