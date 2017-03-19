@@ -165,7 +165,7 @@ while not exitRequested:
                   if p.returncode==0:
                      print('Command '+str(params[1:])+' succeed',end='')
                   else:
-                     print('Command '+str(params[1:])+' returned error code '+p.returncode,end='')
+                     print('Command '+str(params[1:])+' returned error code '+str(p.returncode),end='')
 
                   # print output
                   if(len(t)==0):

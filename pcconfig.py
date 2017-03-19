@@ -2,7 +2,7 @@
 pcwakerListeningPort=9988
 
 # server ip:port address of pcwakerd
-pcwakerServerAddress=('192.168.1.17',pcwakerListeningPort)
+pcwakerServerAddress=('cadwork-pi.fit.vutbr.cz',pcwakerListeningPort)
 
 # computers
 class pcCore2:
