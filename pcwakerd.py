@@ -1,24 +1,24 @@
 #!/usr/bin/env python3.4
 
 #
-# pcwakerd.py [without parameters]
+# pcwakerd [without parameters]
 #
 #    Starts the process as the normal application.
 #
-# pcwakerd.py --init-gpio
+# pcwakerd --init-gpio
 #
 #    Initializes GPIO pins to their default state and exits
-#    (This is performed on any pcwakerd.py start anyway. But
-#    sometimes we do not want to start pcwakerd.py on system boot,
+#    (This is performed on any pcwakerd start anyway. But
+#    sometimes we do not want to start pcwakerd on system boot,
 #    but we might want to initialize GPIO pins.)
 #
 
 #
-# pcwaker.py daemon [start|restart|stop|init-gpio]
+# pcwaker daemon [start|restart|stop|init-gpio]
 #
-#    Controls pcwakerd.py daemon.
+#    Controls pcwakerd daemon.
 #
-# pcwaker.py status [--machine-readable] [computer-names]
+# pcwaker status [--machine-readable] [computer-names]
 #
 #    Prints the status of specified computer and OS booted as
 #    some computers have more OS installed. Status can be:
@@ -26,29 +26,29 @@
 #    If no computer names are given, all configured computers
 #    are printed.
 #
-# pcwaker.py list
+# pcwaker list
 #
 #    Prints all configured computers that this utility is expected to control
 #    and all OS installed on them configured to be used with this utility.
 #    NOT IMPLEMENTED YET.
 #
-# pcwaker.py start [computer-name] [os-to-boot]
+# pcwaker start [computer-name] [os-to-boot]
 #
 #    Powers on the computer. Does nothing if the computer is already running.
 #    The powering-on procedure is applied only if the computer is in OFF state.
 #    Nothing is done in ON, ON-AND-BUSY and BOOTING states.
 #    Failure is returned if the computer state is SHUTTING-DOWN.
 #
-# pcwaker.py stop [computer-name]
+# pcwaker stop [computer-name]
 #
 #    Switches the computer off.
 #
-# pcwaker.py kill [computer-name]
+# pcwaker kill [computer-name]
 #
 #    Forcefully powers off the computer. The operation is equal to
 #    pressing power button for five seconds. Use this on frozen computers.
 #
-# pcwaker.py command [computer-name] [command-to-run] [command-parameters]
+# pcwaker command [computer-name] [command-to-run] [command-parameters]
 #
 #    Executes the command on the computer.
 #
@@ -443,7 +443,7 @@ class WorkerThread(threading.Thread):
          self.associatedComputer=None
 
       # close connection
-      # (close of connection terminating pcwakerd.py is postponed, it will be closed by main thread)
+      # (close of connection terminating pcwakerd is postponed, it will be closed by main thread)
       if wlog!=shutdownLog:
          if self.stream:
             wlog.removeHandler(wlogHandler)
@@ -535,7 +535,7 @@ if os.isatty(sys.stdout.fileno()) or args.init_print_log:
    rootLog.debug('Log brought up and output to stdout was added.')
 log=logging.getLogger('main')
 log.setLevel(rootLog.level)
-log.critical('pcwakerd.py started with arguments: '+str(sys.argv[1:])+
+log.critical('pcwakerd started with arguments: '+str(sys.argv[1:])+
              ' and debug level '+logging.getLevelName(log.level)+'.')
 
 # create listeningPortFile
@@ -670,7 +670,7 @@ if restartFlag:
 
    # restart the process
    log.info('Restarting process...')
-   p=subprocess.Popen(["./pcwakerd.py","--init-print-log"],stdout=subprocess.PIPE)
+   p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
 
    # write new process output to log
    # (but first remove termintating '\n')

@@ -43,7 +43,7 @@ if len(sys.argv)<=1 or '-h' in sys.argv or '--help' in sys.argv:
 
 # parse arguments that does not connect to the daemon
 if len(sys.argv)>=2 and sys.argv[1]=='daemon':
-   daemonFileName=os.path.dirname(os.path.abspath(__file__))+'/pcwakerd.py'
+   daemonFileName=os.path.dirname(os.path.abspath(__file__))+'/pcwakerd'
    if len(sys.argv)<3:
       print('Error: Not enough arguments for daemon parameter.')
       exit(1)
