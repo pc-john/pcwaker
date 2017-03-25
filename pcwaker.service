@@ -6,8 +6,8 @@ After=network.target syslog.target
 Type=forking
 User=pi
 Group=pi
-ExecStart=/buildbot-master/pcwaker.py daemon start --debug
+ExecStart=/buildbot-master/pcwaker.py daemon start
 ExecStop =/buildbot-master/pcwaker.py daemon stop
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
