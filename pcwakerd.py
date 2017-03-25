@@ -43,6 +43,11 @@
 #
 #    Switches the computer off.
 #
+# pcwaker.py kill [computer-name]
+#
+#    Forcefully powers off the computer. The operation is equal to
+#    pressing power button for five seconds. Use this on frozen computers.
+#
 # pcwaker.py command [computer-name] [command-to-run] [command-parameters]
 #
 #    Executes the command on the computer.
@@ -264,10 +269,11 @@ class WorkerThread(threading.Thread):
                         time.sleep(0.1)
                         if GPIO.input(pc.pinPowerSense)==0:
                            wlog.critical('Failed to start computer '+pc.name+'.')
+                           pc.booting=False
                         else:
-                           pc.booting=True
-                           pc.shutdownRequested=False
                            wlog.critical('Computer '+pc.name+' successfully started.')
+                           pc.booting=True
+                        pc.shutdownRequested=False
                      else:
                         if status==StatusOn:
                            # if on, do nothing
@@ -300,10 +306,6 @@ class WorkerThread(threading.Thread):
                         wlog.info('Stopping computer '+pc.name+'...')
                         pc.stream.send(MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
                         pc.shutdownRequested=True
-                        #if GPIO.input(pc.pinPowerSense)==0:
-                           #wlog.critical('Failed to start computer '+pc.name+'.')
-                        #else:
-                           #wlog.critical('Computer '+pc.name+' successfully started.')
                      else:
                         if status==StatusOff:
                            # if off, do nothing
@@ -311,6 +313,49 @@ class WorkerThread(threading.Thread):
                         else:
                            # if booting or shutting down, print error
                            wlog.critical('Can not stop computer '+pc.name+'. It is not in ON state (currently '+statusToString(status)+').')
+               break
+
+            # kill computer
+            elif params[0]=='kill':
+               if len(params)==1:
+                  wlog.error('Error: No computer(s) specified.')
+               else:
+                  list=[]
+                  ok=True
+                  for name in params[1:]:
+                     pc=getComputer(name)
+                     if pc==None:
+                        wlog.critical(name+' is not a configured computer.')
+                        ok=False
+                     else:
+                        list.append(pc)
+                  if not ok:
+                     break
+                  for pc in list:
+                     status=getComputerStatus(pc)
+                     if status==StatusOff:
+                        wlog.info('Computer '+pc.name+' is already in OFF state.')
+                     else:
+                        wlog.info('Stopping computer '+pc.name+'...')
+
+                        # press power button and test each 0.5s if computer switched off
+                        GPIO.output(pc.pinPowerButton,1)
+                        for i in range(15): # wait max 7.5s
+                           time.sleep(0.5)
+                           if GPIO.input(pc.pinPowerSense)==0:
+                              break;
+
+                        # release power button
+                        GPIO.output(pc.pinPowerButton,0)
+                        time.sleep(0.5)
+
+                        # evaluate final state
+                        if GPIO.input(pc.pinPowerSense)==0:
+                           wlog.info('Computer '+pc.name+' switched off.')
+                           pc.booting=False
+                           pc.shutdownRequested=False
+                        else:
+                           wlog.critical('Failed to kill computer '+pc.name+'.')
                break
 
             # execute command on computer
