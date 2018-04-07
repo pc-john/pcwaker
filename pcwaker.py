@@ -1,13 +1,46 @@
 #!/usr/bin/env python3.4
 
+import asyncio
 import os
 import pickle
-import socket
-import struct
 import subprocess
 import sys
 from pcwaker_common import *
-from pcconfig import pcwakerListeningPort #,pcwakerServerAddress
+from pcconfig import pcwakerListeningPort
+
+
+async def clientConnectionHandler(message):
+
+	# open connection
+	print('Connecting to port '+str(port)+'...')
+	try:
+		reader,writer=await asyncio.open_connection('127.0.0.1',port,loop=loop)
+	except ConnectionRefusedError as e:
+		if len(sys.argv)>=3 and sys.argv[1]=='daemon' and sys.argv[2]=='stop':
+			print('Daemon process already stopped.')
+			exit(0)
+		else:
+			print('Daemon process not running or can not connect to it.')
+			exit(1)
+	except OSError as e:
+		print('Error: Can not connect to the daemon process.\n'
+		      '   ('+type(e).__name__+': '+e.strerror+')')
+		exit(1)
+
+	# send message
+	print('Sending message '+str(message)+'.')
+	stream_write_message(writer,MSG_WAKER,message)
+	writer.write_eof()
+
+	# receive messages
+	while not reader.at_eof():
+		msgType,message=await stream_read_message(reader)
+		if msgType==MSG_EOF:
+			break
+		print(str(message))
+
+	print('Closing the connection.')
+	writer.close()
 
 
 # -h and --help or no arguments
@@ -18,12 +51,8 @@ if len(sys.argv)<=1 or '-h' in sys.argv or '--help' in sys.argv:
          'Usage:\n'
          '   -h, --help, no arguments\n'
          '      Print usage.\n'
-         '   daemon start|stop|restart|init-gpio [--debug]\n'
+         '   daemon start|stop|restart [--debug]\n'
          '      Starts, stops or restarts daemon process (pcwakerd).\n'
-         '      init-gpio initializes gpio pins (pull-up and pull-down status\n'
-         '      otherwise some LEDs might shine a little, etc.). This is done\n'
-         '      automatically on the daemon start. So, init-gpio is useful just\n'
-         '      in the case the daemon is not to be started.\n'
          '      Optional --debug parameter causes debug messages to be printed.\n'
          '   status [computer-names]\n'
          '      Prints status of all computers. If computer name(s) are given,\n'
@@ -60,9 +89,6 @@ if len(sys.argv)>=2 and sys.argv[1]=='daemon':
          exit(0)
       else:
          exit(1)
-   if sys.argv[2]=='init-gpio':
-      subprocess.Popen([daemonFileName,"--init-gpio"]+sys.argv[3:])
-      exit(0)
 
 # parse --machine-readable if present
 machineReadable=len(sys.argv)>=3 and sys.argv[1]=='status' and sys.argv[2]=='--machine-readable'
@@ -88,28 +114,17 @@ if listeningPortFilePath:
 else:
    port=pcwakerListeningPort
 
-# make connection to the daemon process
-s=socket.socket()
-r=s.connect_ex(('127.0.0.1',port)) # use local connections only, support for
-                                   # remote connections seems questionable
+# send cmd-line parameters to daemon
+message=sys.argv[1:]
 
-# handle errors
-if r!=0:
-   if r==socket.errno.ECONNREFUSED:
-      if len(sys.argv)>=3 and sys.argv[1]=='daemon' and sys.argv[2]=='stop':
-         print('Daemon process already stopped.')
-         exit(0)
-      else:
-         print('Daemon process not running or can not connect to it.')
-         exit(1)
-   print('Error: can not connect to the daemon process (error: '+str(r)+').')
-   exit(1)
+# run main loop
+loop = asyncio.get_event_loop()
+loop.run_until_complete(clientConnectionHandler(message))
+loop.close()
 
-# send parameters to daemon
-stream=Stream(s)
-a=sys.argv[1:]
-data=pickle.dumps(a,protocol=2)
-stream.send(MSG_WAKER,data)
+
+sys.exit(0)
+
 
 # receive and print response
 while True:
@@ -120,6 +135,3 @@ while True:
       print(pickle.loads(data),end='')
    if msgType==MSG_LOG and not machineReadable:
       print(data.decode(errors='replace'),end='')
-
-# finalize application
-stream.close()

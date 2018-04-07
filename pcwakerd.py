@@ -5,13 +5,6 @@
 #
 #    Starts the process as the normal application.
 #
-# pcwakerd --init-gpio
-#
-#    Initializes GPIO pins to their default state and exits
-#    (This is performed on any pcwakerd start anyway. But
-#    sometimes we do not want to start pcwakerd on system boot,
-#    but we might want to initialize GPIO pins.)
-#
 
 #
 # pcwaker daemon [start|restart|stop|init-gpio]
@@ -54,26 +47,302 @@
 #
 
 
-
-# LED:
-# green - power on
-# blue - missing network communication
-# red - power switch rele on
-
 import argparse
+import asyncio
 import logging
 import logging.handlers
 import os
 import pickle
 import signal
 import socket
-import subprocess
 import sys
-import threading
-import time
-import RPi.GPIO as GPIO
 from pcwaker_common import *
 from pcconfig import *
+
+
+# global variables
+terminatingSignalHandled=False
+restartFlag=False
+shutdownLog=None
+
+
+
+# log handler that sends log messages over the stream back to the client
+class ConnectionLogHandler(logging.Handler):
+
+	def __init__(self,writer):
+		logging.Handler.__init__(self)
+		self.writer=writer
+
+	def emit(self,record):
+		# multithreaded lock is in handle() method,
+		# thus only single thread may enter this method
+		try:
+			text=self.format(record)
+			stream_write_message(self.writer,MSG_LOG,text)
+		except Exception:
+			self.handleError(record)
+
+
+async def serverConnectionHandler(reader,writer):
+
+	# initialize log
+	# log messages are sent to two targets: logged in main thread log
+	# and sent over command connection back to the client
+	wlog=logging.Logger('ConnectionLogger',rootLog.level)
+	wlog.parent=rootLog
+	wlogHandler=ConnectionLogHandler(writer)
+	wlog.addHandler(wlogHandler)
+	wlog.debug('Connection handler started.')
+
+	# main loop of the connection
+	while not reader.at_eof():
+
+		# receive the messageq
+		msgType,message=await stream_read_message(reader)
+
+		# process messages from pcwaker.py
+		if msgType==MSG_WAKER:
+
+			# decode data
+			params=message
+			wlog.debug('Message received from pcwaker: '+str(params))
+
+			# ignore empty messages
+			if len(params)==0:
+				continue
+
+			# daemon stop and restart
+			if params[0]=='daemon':
+
+				if len(params)==1:
+					wlog.error('Error: Not enough arguments for daemon parameter.')
+					break
+
+				if params[1]=='stop' or params[1]=='restart':
+					global restartFlag
+					global shutdownLog
+					shutdownLog=wlog
+					if params[1]=='restart':
+						restartFlag=True
+						wlog.debug('Scheduled server restart.')
+					else:
+						wlog.debug('Scheduled server stop.')
+					loop.stop()
+					continue
+
+				wlog.error('Unknown parameter 1: '+params[1])
+				break
+
+	# close connection
+	# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
+	wlog.debug('Server connection handler cleaning up...')
+	if wlog!=shutdownLog:
+		wlog.removeHandler(wlogHandler)
+		writer.close()
+	wlog.debug('Server connection handler terminated.')
+
+
+def cleanUp():
+	if listeningPortFilePath:
+		listeningPortFile.close()
+		os.remove(listeningPortFilePath)
+	if 'server' in globals():
+		global server
+		server.close()
+		if not loop.is_running:
+			loop.run_until_complete(server.wait_closed())
+		loop.stop()
+
+
+def signalHandler(signum,stackframe):
+
+   # translate signum to text
+   sig2text={1:'HUP',15:'TERM'}
+   if signum in sig2text:
+      sigName=sig2text[signum]
+   else:
+      sigName=str(signum)
+
+   # test for multiple signals
+   global terminatingSignalHandled
+   if not terminatingSignalHandled:
+      terminatingSignalHandled=True
+
+      # log message
+      if signum==signal.SIGINT:
+         log.critical('Ctrl-C signal received. Terminating...')
+      else:
+         log.critical(sigName+' signal received. Terminating...')
+
+      # clean up and exit
+      cleanUp()
+      log.info('Done.')
+      sys.exit(1)
+
+   else:
+
+      # log message and exit
+      log.critical('Another terminating signal ('+sigName+') received. Terminating immediately.')
+      sys.exit(1)
+
+
+# init argument parser
+argParser=argparse.ArgumentParser(description='PCWaker daemon for switching computers on, monitoring '
+                                  'them, executing commands on them and safely shutting them down.')
+argParser.add_argument('--debug',help='Sets debug level to "debug". '
+                                      'Much of internal information will be printed.',
+                       action='store_true')
+argParser.add_argument('--debug-level',type=str,help='Sets debug level. '
+                       'Valid values are debug, info, warning, error, critical.',
+                       action='store')
+argParser.add_argument('--init-print-log',
+                       action='store_true')
+args=argParser.parse_args()
+
+# initialize logger
+rootLog=logging.getLogger()
+logFileHandler=logging.handlers.RotatingFileHandler(logFilePath,maxBytes=100*1024,backupCount=1)
+logFileHandler.setFormatter(logging.Formatter('%(asctime)-15s %(message)s'))
+rootLog.addHandler(logFileHandler)
+logFileHandler.doRollover()
+rootLog.setLevel(logging.INFO)
+if args.debug:
+	rootLog.setLevel(logging.DEBUG)
+else:
+	if args.debug_level:
+		rootLog.setLevel(args.debug_level.upper())
+if os.isatty(sys.stdout.fileno()) or args.init_print_log:
+	# for more info to detect daemonized status see:
+	# http://stackoverflow.com/questions/24861351/how-to-detect-if-python-script-is-being-run-as-a-background-process
+	# http://stackoverflow.com/questions/14894261/programmatically-check-if-a-process-is-being-run-in-the-background
+	logStdOutHandler=logging.StreamHandler(stream=sys.stdout)
+	rootLog.addHandler(logStdOutHandler)
+	rootLog.debug('Log brought up and output to stdout was added.')
+log=logging.getLogger('main')
+log.setLevel(rootLog.level)
+log.critical('pcwakerd started with arguments: '+str(sys.argv[1:])+
+             ' and debug level '+logging.getLevelName(log.level)+'.')
+
+# signal handlers
+signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
+signal.signal(signal.SIGHUP,signalHandler) # hang-up or death of controlling process
+signal.signal(signal.SIGTERM,signalHandler) # terminate request
+
+# create listeningPortFile
+if listeningPortFilePath:
+   try:
+      listeningPortFile=open(listeningPortFilePath,mode='x')
+   except FileNotFoundError:
+      log.critical('Error: Can not create file '+listeningPortFilePath+'.\n'
+                   '   Make sure parent directories exist and proper access rights are set.')
+      exit(1)
+   except FileExistsError:
+      log.critical('Error: Another instance is already running.\n'
+                   '   If it is not the case, delete file \"'+listeningPortFilePath+'\".')
+      exit(1)
+   except OSError as e:
+      log.critical('Error: Unknown error when creating file \"'+listeningPortFilePath+'\".\n'
+                   '   Error string: '+e.strerror+'.')
+      exit(1)
+
+# create listening socket
+log.info('Initializing network:')
+loop=asyncio.get_event_loop()
+if pcwakerListeningPort!=0:
+	coro=asyncio.start_server(serverConnectionHandler,'',pcwakerListeningPort,loop=loop)
+else:
+	coro=asyncio.start_server(serverConnectionHandler,'127.0.0.1',0,loop=loop)
+try:
+	server=loop.run_until_complete(coro)
+	if server.sockets==None:
+		raise OSError(5,"Failed to create listening socket.")
+except OSError as msg:
+	log.critical('Network error ('+msg.strerror+'). Terminating.')
+	cleanUp()
+	log.info('Done.')
+	sys.exit(1)
+
+# get listening port number
+listeningPort4=0
+listeningPort6=0
+for s in server.sockets:
+	if s.family==socket.AF_INET: listeningPort4=s.getsockname()[1]
+	if s.family==socket.AF_INET6: listeningPort6=s.getsockname()[1]
+if listeningPort4!=listeningPort6 and listeningPort4!=0 and listeningPort6!=0:
+	log.critical('Error: Listening on different ports. IPv4: '+str(listeningPort4)+
+	             ', IPv6: '+str(listeningPort6)+'.')
+listeningPort=0
+ipFamilyString=''
+if listeningPort4!=0:
+	listeningPort=listeningPort4
+	ipFamilyString='IPv4'
+if listeningPort6!=0:
+	if listeningPort==0:
+		listeningPort=listeningPort6
+	if ipFamilyString=='':
+		ipFamilyString='IPv6'
+	else:
+		ipFamilyString+=' and IPv6'
+if listeningPort4!=0 and listeningPort6!=0:
+	ipFamilyString+=' ports '
+else:
+	ipFamilyString+=' port '
+if listeningPortFilePath:
+	listeningPortFile.write(str(listeningPort))
+	listeningPortFile.flush()
+log.critical('Waiting connections on '+ipFamilyString+str(listeningPort)+'...');
+
+# run main loop
+try:
+	loop.run_forever()
+finally:
+
+	# send log messages to shutdownLog as well (they will be sent over network)
+	if shutdownLog:
+		log.parent=shutdownLog
+
+	# close server (and its listening socket)
+	log.critical('Server stopped.');
+	server.close()
+
+# wait on server closing
+log.info('Terminating...')
+loop.run_until_complete(server.wait_closed())
+if restartFlag:
+
+   # restart the process
+   log.info('Restarting process...')
+   p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
+
+   # write new process output to log
+   # (but first remove termintating '\n')
+   s=p.stdout.read().decode(errors='replace')
+   if len(s)>0 and s[-1]=='\n':
+      s=s[:-1]
+   log.info(s)
+
+else:
+   log.info('Done.')
+
+# close connection to the client that initiated daemon shut down
+# (we used the connection to forward all log messages)
+if shutdownLog:
+	shutdownLog.handlers[0].writer.close()
+
+# perform clean up
+loop.close()
+log.debug('Clean up complete.');
+sys.exit(0)
+
+
+import time
+time.sleep(5)
+#improve: error message when already listening on socket
+
+
+import subprocess
+import threading
 
 
 StatusOff=1
@@ -83,29 +352,7 @@ StatusLostConnection=4
 StatusShuttingDown=5
 
 stopFlag=False
-restartFlag=False
-shutdownLog=None
-terminatingSignalHandled=False
 threadList=[]
-
-
-# log handler that sends log messages over command connection back to the client
-class ConnectionLogHandler(logging.Handler):
-
-   def __init__(self,stream):
-      logging.Handler.__init__(self)
-      self.stream=stream
-
-   def emit(self,record):
-      # multithreaded lock is in handle() method,
-      # thus only single thread may enter this method
-      try:
-         text=self.format(record)
-         if len(text)>0:
-            data=(text+'\n').encode(errors='replace')
-            self.stream.send(MSG_LOG,data) # if not all data are sent, they are sent with another read or write request
-      except Exception:
-         self.handleError(record)
 
 
 def getComputer(name):
@@ -185,30 +432,7 @@ class WorkerThread(threading.Thread):
             # daemon restart/stop
             if params[0]=='daemon':
 
-               if len(params)==1:
-                  wlog.error('Error: Not enough arguments for daemon parameter.')
-                  break
-
-               if params[1]=='stop' or params[1]=='restart':
-                  global stopFlag
-                  global restartFlag
-                  global shutdownLog
-                  shutdownLog=wlog
-                  if params[1]=='restart':
-                     restartFlag=True
-                  stopFlag=True # this must be the last flag set
-                  tmpSocket=socket.socket()
-                  try:
-                     tmpSocket.connect(('127.0.0.1',listeningPort))
-                     tmpData=tmpSocket.recv(1) # we never receive anything, just when other side closes, we will get unblocked
-                  except ConnectionRefusedError:
-                     pass
-                  tmpSocket.close()
-                  wlog.debug('Worker thread scheduled mainloop exit.')
-
-               else:
-                  wlog.error('Unknown parameter 1: '+params[1])
-
+               ...
                break
 
             # status of computer(s)
@@ -452,109 +676,6 @@ class WorkerThread(threading.Thread):
       wlog.debug('Worker thread done.')
 
 
-def cleanUp():
-   GPIO.cleanup()
-   if listeningPortFilePath:
-      listeningPortFile.close()
-      os.remove(listeningPortFilePath)
-   if 'commandListeningSocket' in globals():
-      global commandListeningSocket
-      commandListeningSocket.close()
-
-
-def signalHandler(signum,stackframe):
-
-   # translate signum to text
-   sig2text={1:'HUP',15:'TERM'}
-   if signum in sig2text:
-      sigName=sig2text[signum]
-   else:
-      sigName=str(signum)
-
-   # test for multiple signals
-   global terminatingSignalHandled
-   if not terminatingSignalHandled:
-      terminatingSignalHandled=True
-
-      # log message
-      if signum==signal.SIGINT:
-         log.critical('Ctrl-C signal received. Terminating...')
-      else:
-         log.critical(sigName+' signal received. Terminating...')
-
-      # clean up and exit
-      cleanUp()
-      log.info('Done.')
-      sys.exit(1)
-
-   else:
-
-      # log message and exit
-      log.critical('Another terminating signal ('+sigName+') received. Terminating immediately.')
-      sys.exit(1)
-
-
-# init argument parser
-argParser=argparse.ArgumentParser(description='PCWaker daemon for switching on computers, '
-                                  'monitoring them and safely shutting them down.')
-argParser.add_argument('--debug',help='Sets debug level to "debug". '
-                                      'Much of internal information will be printed.',
-                       action='store_true')
-argParser.add_argument('--debug-level',type=str,help='Sets debug level. '
-                       'Valid values are debug, info, warning, error, critical.',
-                       action='store')
-argParser.add_argument('--init-gpio',help='Initializes GPIO pins and exits.',
-                       action='store_true')
-argParser.add_argument('--init-print-log',
-                       action='store_true')
-args=argParser.parse_args()
-
-# signal handlers
-signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
-signal.signal(signal.SIGHUP,signalHandler) # hang-up or death of controlling process
-signal.signal(signal.SIGTERM,signalHandler) # terminate request
-
-# initialize logger
-rootLog=logging.getLogger()
-logFileHandler=logging.handlers.RotatingFileHandler(logFilePath,maxBytes=100*1024,backupCount=1)
-logFileHandler.setFormatter(logging.Formatter('%(asctime)-15s %(message)s'))
-rootLog.addHandler(logFileHandler)
-logFileHandler.doRollover()
-rootLog.setLevel(logging.INFO)
-if args.debug:
-   rootLog.setLevel(logging.DEBUG)
-else:
-   if args.debug_level:
-      rootLog.setLevel(args.debug_level.upper())
-if os.isatty(sys.stdout.fileno()) or args.init_print_log:
-   # for more info to detect daemonized status see:
-   # http://stackoverflow.com/questions/24861351/how-to-detect-if-python-script-is-being-run-as-a-background-process
-   # http://stackoverflow.com/questions/14894261/programmatically-check-if-a-process-is-being-run-in-the-background
-   logStdOutHandler=logging.StreamHandler(stream=sys.stdout)
-   rootLog.addHandler(logStdOutHandler)
-   rootLog.debug('Log brought up and output to stdout was added.')
-log=logging.getLogger('main')
-log.setLevel(rootLog.level)
-log.critical('pcwakerd started with arguments: '+str(sys.argv[1:])+
-             ' and debug level '+logging.getLevelName(log.level)+'.')
-
-# create listeningPortFile
-if listeningPortFilePath:
-   try:
-      listeningPortFile=open(listeningPortFilePath,mode='x')
-   except FileNotFoundError:
-      log.critical('Error: Can not create file '+listeningPortFilePath+'.\n'
-                   '   Make sure parent directories exist and proper access rights are set.')
-      exit(1)
-   except FileExistsError:
-      log.critical('Error: Another instance is already running.\n'
-                   '   If it is not the case, delete file \"'+listeningPortFilePath+'\".')
-      exit(1)
-   except OSError as e:
-      log.critical('Error: Unknown error when creating file \"'+listeningPortFilePath+'\".\n'
-                   '   Error string: '+e.strerror+'.')
-      exit(1)
-
 # initialize GPIO
 GPIO.setmode(GPIO.BCM)
 log.info('Initializing computers:')
@@ -572,28 +693,6 @@ if args.init_gpio:
    cleanUp()
    log.info('Done.')
    exit(0)
-
-# init listening socket
-log.info('Initializing network:')
-commandListeningSocket=socket.socket()
-commandListeningSocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-try:
-   if pcwakerListeningPort!=0:
-      commandListeningSocket.bind(('',pcwakerListeningPort)) # FIXME: this may fail if somebody is already listening on the port
-   else:
-      commandListeningSocket.bind(('127.0.0.1',0)) # FIXME: this may fail if somebody is already listening on the port
-   commandListeningSocket.listen(5)
-except OSError as msg:
-   commandListeningSocket.close()
-   log.critical('Network error. Terminating.')
-   cleanUp()
-   log.info('Done.')
-   sys.exit(1)
-addr,listeningPort=commandListeningSocket.getsockname()
-if listeningPortFilePath:
-   listeningPortFile.write(str(listeningPort))
-   listeningPortFile.flush()
-log.info('   Commands are expected on the port '+str(listeningPort)+'.')
 
 # stop logging to stdout for --init-print-log here
 log.info('Running...')
