@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.4
+#!/usr/bin/env python3.5
 
 #
 # pcwakerd [without parameters]
@@ -136,11 +136,11 @@ async def serverConnectionHandler(reader,writer):
 
 	# close connection
 	# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
-	wlog.debug('Server connection handler cleaning up...')
+	wlog.debug('Connection handler cleaning up...')
 	if wlog!=shutdownLog:
 		wlog.removeHandler(wlogHandler)
 		writer.close()
-	wlog.debug('Server connection handler terminated.')
+	wlog.debug('Connection handler terminated.')
 
 
 def cleanUp():
@@ -196,8 +196,8 @@ argParser.add_argument('--debug',help='Sets debug level to "debug". '
 argParser.add_argument('--debug-level',type=str,help='Sets debug level. '
                        'Valid values are debug, info, warning, error, critical.',
                        action='store')
-argParser.add_argument('--init-print-log',
-                       action='store_true')
+argParser.add_argument('--init-print-log',action='store_true')
+argParser.add_argument('--signal-start-to-parent',action='store_true')
 args=argParser.parse_args()
 
 # initialize logger
@@ -291,7 +291,16 @@ else:
 if listeningPortFilePath:
 	listeningPortFile.write(str(listeningPort))
 	listeningPortFile.flush()
-log.critical('Waiting connections on '+ipFamilyString+str(listeningPort)+'...');
+log.info('Waiting connections on '+ipFamilyString+str(listeningPort)+'...');
+
+# stop logging to stdout for --init-print-log here
+log.info('Server up and running...')
+if args.init_print_log:
+	rootLog.removeHandler(logStdOutHandler)
+	sys.stdout.flush()
+	os.close(sys.stdout.fileno())
+if args.signal_start_to_parent:
+	os.kill(os.getppid(),signal.SIGHUP)
 
 # run main loop
 try:
@@ -303,7 +312,7 @@ finally:
 		log.parent=shutdownLog
 
 	# close server (and its listening socket)
-	log.critical('Server stopped.');
+	log.info('Server stopped.');
 	server.close()
 
 # wait on server closing
@@ -311,19 +320,19 @@ log.info('Terminating...')
 loop.run_until_complete(server.wait_closed())
 if restartFlag:
 
-   # restart the process
-   log.info('Restarting process...')
-   p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
+	# restart the process
+	log.info('Restarting process...')
+	p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
 
-   # write new process output to log
-   # (but first remove termintating '\n')
-   s=p.stdout.read().decode(errors='replace')
-   if len(s)>0 and s[-1]=='\n':
-      s=s[:-1]
-   log.info(s)
+	# write new process output to log
+	# (but first remove termintating '\n')
+	s=p.stdout.read().decode(errors='replace')
+	if len(s)>0 and s[-1]=='\n':
+		s=s[:-1]
+	log.info(s)
 
 else:
-   log.info('Done.')
+	log.info('Done.')
 
 # close connection to the client that initiated daemon shut down
 # (we used the connection to forward all log messages)
@@ -334,11 +343,6 @@ if shutdownLog:
 loop.close()
 log.debug('Clean up complete.');
 sys.exit(0)
-
-
-import time
-time.sleep(5)
-#improve: error message when already listening on socket
 
 
 import subprocess

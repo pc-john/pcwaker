@@ -1,9 +1,10 @@
-#!/usr/bin/env python3.4
+#!/usr/bin/env python3.5
 
 import asyncio
 import os
 import pickle
 import subprocess
+import signal
 import sys
 from pcwaker_common import *
 from pcconfig import pcwakerListeningPort
@@ -76,9 +77,32 @@ if len(sys.argv)>=2 and sys.argv[1]=='daemon':
    if len(sys.argv)<3:
       print('Error: Not enough arguments for daemon parameter.')
       exit(1)
+
+   # daemon start
    if sys.argv[2]=='start':
-      p=subprocess.Popen([daemonFileName,"--init-print-log"]+sys.argv[3:])
+
+      # register SIGHUP that will be sent by daemon when it is fully up
+      def signalHandler(signum,stackframe):
+         exit(0)
+      signal.signal(signal.SIGHUP,signalHandler)
+
+      # start daemon
+      print('Starting daemon process...')
+      try:
+         p=subprocess.Popen([daemonFileName,"--init-print-log","--signal-start-to-parent"]+sys.argv[3:])
+      except OSError as e:
+         print('Failed to start daemon process ('+daemonFileName+').\n'
+               '   Error: '+ e.strerror)
+         exit(1)
+
+      # wait for daemon to start (SIGHUP will be received)
+      try:
+         p.wait(5)
+      except subprocess.TimeoutExpired:
+         print('Do not waiting for the daemon to fully start.')
       exit(0)
+
+   # daemon restart
    if sys.argv[2]=='restart':
       thisFileName=os.path.abspath(__file__)
       p1=subprocess.Popen([thisFileName,"daemon","stop"]+sys.argv[3:])
