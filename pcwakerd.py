@@ -7,7 +7,7 @@
 #
 
 #
-# pcwaker daemon [start|restart|stop|init-gpio]
+# pcwaker daemon [start|stop|restart]
 #
 #    Controls pcwakerd daemon.
 #
@@ -25,7 +25,7 @@
 #    and all OS installed on them configured to be used with this utility.
 #    NOT IMPLEMENTED YET.
 #
-# pcwaker start [computer-name] [os-to-boot]
+# pcwaker start [computer-name]
 #
 #    Powers on the computer. Does nothing if the computer is already running.
 #    The powering-on procedure is applied only if the computer is in OFF state.
@@ -46,6 +46,78 @@
 #    Executes the command on the computer.
 #
 
+#
+# Computer states and transitions:
+# OFF - no power, no connection
+#     - start - sends power signal and waits with timeout for power sense,
+#               on success move to STARTING state, on failure keep OFF state
+#     - stop - ignored
+#     - kill - ignored
+#     - command - prints error
+#     - power detected ->STARTING
+#     - connection detected -> check power and move to ON on power or keep OFF if no power
+#     - connection lost -> keep OFF
+#     - no timeout
+# STARTING - power, no connection
+#          - start - ignored
+#          - stop ->STOP_WHEN_CONNECTED
+#          - kill - sends 4 second signal, checks for power down,
+#                   on success ->OFF, on failure ->FROZEN
+#          - command - prints error
+#          - power lost ->OFF
+#          - connection appeared ->ON
+#          - connection lost ->FROZEN
+#          - timeout -> FROZEN
+# ON - power, connection
+#    - start - ignored
+#    - stop - performs shutdown procedure that might be potentially stopped by client
+#             on success ->STOPPING, on failure -> keep ON
+#    - kill - sends 4 second signal, checks for power down,
+#             on success ->OFF, on failure -> keep ON
+#    - command - ok
+#    - power lost ->OFF
+#    - connection appeared -> keep ON
+#    - connection lost ->FROZEN
+#    - no timeout
+# STOPPING - power, unsure connection
+#          - start ->START_AFTER_STOPPED
+#          - stop - ignored
+#          - kill - sends 4 second signal, checks for power down,
+#                   on success ->OFF, on failure ->FROZEN
+#          - command - print error, except internal commands before connection is closed
+#          - power lost ->OFF
+#          - connection appeared ->ON
+#          - connection lost -> ok
+#          - timeout ->FROZEN
+# FROZEN - power, undefined connection
+#        - power lost ->OFF
+#        - start - ignored
+#        - stop - ignored
+#        - kill - sends 4 second signal, checks for power down,
+#                 on success ->OFF, on failure -> keep FROZEN
+#        - connection appeared ->ON
+#        - connection lost -> keep FROZEN
+#        - no timeout
+# STOP_AFTER_STARTED - power, shortly connection
+#                    - start ->STARTING
+#                    - stop - ignored
+#                    - kill - usual procedure, on success ->OFF, on failure ->FROZEN
+#                    - command - print error
+#                    - power lost ->OFF
+#                    - connection appeared - send command and ->STOPPING
+#                    - connection lost ->FROZEN
+#                    - timeout ->FROZEN
+# START_AFTER_STOPPED - shortly without power, no connection
+#                     - must install periodical power checker
+#                     - start - ignored
+#                     - stop ->STOPPING, stop periodical power checker
+#                     - kill - kill procedure, on success ->OFF, on failure ->FROZEN, stop periodical power checker
+#                     - command - print error
+#                     - power lost -> wait a second, send power signal, stop periodical power checker and ->STARTING
+#                     - connection appeared ->ON
+#                     - connection lost ->FROZEN
+#                     - timeout ->FROZEN
+#
 
 import argparse
 import asyncio
@@ -56,6 +128,7 @@ import pickle
 import signal
 import socket
 import sys
+import traceback
 from pcwaker_common import *
 from pcconfig import *
 
@@ -64,6 +137,17 @@ from pcconfig import *
 terminatingSignalHandled=False
 restartFlag=False
 shutdownLog=None
+deviceLock=asyncio.Lock()
+
+# constants
+class Status:
+	OFF=1
+	STARTING=2
+	ON=3
+	STOPPING=4
+	FROZEN=5
+	START_AFTER_STOPPED=6
+	STOP_AFTER_STARTED=7
 
 
 
@@ -86,79 +170,209 @@ class ConnectionLogHandler(logging.Handler):
 
 async def serverConnectionHandler(reader,writer):
 
-	# initialize log
-	# log messages are sent to two targets: logged in main thread log
-	# and sent over command connection back to the client
-	wlog=logging.Logger('ConnectionLogger',rootLog.level)
-	wlog.parent=rootLog
-	wlogHandler=ConnectionLogHandler(writer)
-	wlog.addHandler(wlogHandler)
-	wlog.debug('Connection handler started.')
+	wlog=None
+	try:
 
-	# main loop of the connection
-	while not reader.at_eof():
+		# initialize log
+		# log messages are sent to two targets: logged in main thread log
+		# and sent over command connection back to the client
+		wlog=logging.Logger('ConnectionLogger',rootLog.level)
+		wlog.parent=rootLog
+		wlogHandler=ConnectionLogHandler(writer)
+		wlog.addHandler(wlogHandler)
+		wlog.debug('Connection handler started.')
 
-		# receive the messageq
-		msgType,message=await stream_read_message(reader)
+		# main loop of the connection
+		while not reader.at_eof():
 
-		# process messages from pcwaker.py
-		if msgType==MSG_WAKER:
+			# receive the messageq
+			msgType,message=await stream_read_message(reader)
 
-			# decode data
-			params=message
-			wlog.debug('Message received from pcwaker: '+str(params))
+			# process messages from pcwaker.py
+			if msgType==MSG_WAKER:
 
-			# ignore empty messages
-			if len(params)==0:
-				continue
+				# decode data
+				params=message
+				wlog.debug('Message received from pcwaker: '+str(params))
 
-			# daemon stop and restart
-			if params[0]=='daemon':
-
-				if len(params)==1:
-					wlog.error('Error: Not enough arguments for daemon parameter.')
-					break
-
-				if params[1]=='stop' or params[1]=='restart':
-					global restartFlag
-					global shutdownLog
-					shutdownLog=wlog
-					if params[1]=='restart':
-						restartFlag=True
-						wlog.debug('Scheduled server restart.')
-					else:
-						wlog.debug('Scheduled server stop.')
-					loop.stop()
+				# ignore empty messages
+				if len(params)==0:
 					continue
 
-				wlog.error('Unknown parameter 1: '+params[1])
-				break
+				# daemon stop and restart
+				if params[0]=='daemon':
 
-	# close connection
-	# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
-	wlog.debug('Connection handler cleaning up...')
-	if wlog!=shutdownLog:
-		wlog.removeHandler(wlogHandler)
-		writer.close()
-	wlog.debug('Connection handler terminated.')
+					if len(params)==1:
+						wlog.error('Error: Not enough arguments for daemon parameter.')
+						break
+
+					if params[1]=='stop' or params[1]=='restart':
+						global restartFlag
+						global shutdownLog
+						shutdownLog=wlog
+						if params[1]=='restart':
+							restartFlag=True
+							wlog.debug('Scheduled server restart.')
+						else:
+							wlog.debug('Scheduled server stop.')
+						loop.stop()
+						continue
+
+					wlog.error('Unknown parameter 1: '+params[1])
+					break
+
+				# start computer
+				elif params[0]=='start':
+					if len(params)==1:
+						wlog.error('Error: No computer(s) specified.')
+					else:
+						list=[]
+						ok=True
+						for name in params[1:]:
+							pc=getComputer(name)
+							if pc==None:
+								wlog.critical(name+' is not a configured computer.')
+								ok=False
+							else:
+								list.append(pc)
+						if not ok:
+							break
+						await deviceLock.acquire()
+						try:
+							for pc in list:
+								status=getComputerStatus(pc)
+								if status==StatusOff:
+									# if off, start it
+									wlog.info('Starting computer '+pc.name+'...')
+									GPIO.output(pc.pinPowerButton,1)
+									time.sleep(0.5)
+									GPIO.output(pc.pinPowerButton,0)
+									time.sleep(0.1)
+									if GPIO.input(pc.pinPowerSense)==0:
+										wlog.critical('Failed to start computer '+pc.name+'.')
+										pc.booting=False
+									else:
+										wlog.critical('Computer '+pc.name+' successfully started.')
+										pc.booting=True
+									pc.shutdownRequested=False
+								else:
+									if status==StatusOn:
+										# if on, do nothing
+										wlog.critical('Computer '+pc.name+' is already running (status: ON).')
+									else:
+										# if booting or shutting down, print error
+										wlog.critical('Can not start computer '+pc.name+'. It is not in OFF state (currently: '+statusToString(status)+').')
+						finally:
+							deviceLock.release()
+					break
+
+	except Exception as e:
+		wlog.critical('\nException raised: '+type(e).__name__+'\n'+
+		              traceback.format_exc())
+	finally:
+		# close connection
+		# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
+		wlog.debug('Connection handler cleaning up...')
+		if wlog!=shutdownLog and wlog:
+			wlog.removeHandler(wlogHandler)
+		if wlog!=shutdownLog or wlog==None:
+			writer.close()
+		wlog.debug('Connection handler terminated.')
+
+
+def getComputer(name):
+	global computerList
+	pcList=[x for x in computerList if name in x.names]
+	if len(pcList)==0:
+		return None
+	else:
+		return pcList[0]
 
 
 def cleanUp():
+
+	# send log messages to shutdownLog as well
+	# (they will be sent over network)
+	global log
+	global shutdownLog
+	if shutdownLog:
+		savedParent=log.parent
+		log.parent=shutdownLog
+		log.debug('Adding network handler to global log')
+
+	# log start clean up
+	if 'log' in globals():
+		log.debug('Starting clean up...')
+
+	# remove listening port file
+	global listeningPortFilePath
 	if listeningPortFilePath:
 		listeningPortFile.close()
 		os.remove(listeningPortFilePath)
+		listeningPortFilePath=''
+
+	# close server (and its listening socket)
 	if 'server' in globals():
 		global server
 		server.close()
-		if not loop.is_running:
-			loop.run_until_complete(server.wait_closed())
-		loop.stop()
+		log.info('Server stopped.');
+
+		# wait on server closing
+		log.debug('Terminating...')
+		serverTmp=server
+		del server
+		loop.run_until_complete(serverTmp.wait_closed())
+		del serverTmp
+
+	# dispose USB-4761 IO module
+	if 'instantDiCtrl' in globals() or 'instantDoCtrl' in globals():
+		log.info('Cleaning up USB-4761 IO module...')
+	if 'instantDiCtrl' in globals():
+		global instantDiCtrl
+		instantDiCtrl.Dispose()
+		del instantDiCtrl
+	if 'instantDoCtrl' in globals():
+		global instantDoCtrl
+		instantDoCtrl.Dispose()
+		del instantDoCtrl
+
+	if restartFlag:
+
+		# restart the process
+		log.info('Restarting process...')
+		p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
+
+		# write new process output to log
+		# (but first remove termintating '\n')
+		s=p.stdout.read().decode(errors='replace')
+		if len(s)>0 and s[-1]=='\n':
+			s=s[:-1]
+		log.info(s)
+
+	else:
+		if 'log' in globals():
+			log.info('Done.')
+
+	# close connection to the client that initiated daemon shut down
+	# (we used the connection to forward all log messages)
+	if shutdownLog:
+		log.parent=savedParent
+		for h in shutdownLog.handlers:
+			h.writer.close()
+			h.close()
+		shutdownLog=None
+
+	# perform clean up
+	if 'loop' in globals():
+		loop.close()
+	if 'log' in globals():
+		log.debug('Clean up complete.');
 
 
 def signalHandler(signum,stackframe):
 
    # translate signum to text
-   sig2text={1:'HUP',15:'TERM'}
+   sig2text={1:'HUP',15:'TERM',signal.SIGINT:'Ctrl-C'}
    if signum in sig2text:
       sigName=sig2text[signum]
    else:
@@ -176,15 +390,13 @@ def signalHandler(signum,stackframe):
          log.critical(sigName+' signal received. Terminating...')
 
       # clean up and exit
-      cleanUp()
-      log.info('Done.')
       sys.exit(1)
 
    else:
 
       # log message and exit
       log.critical('Another terminating signal ('+sigName+') received. Terminating immediately.')
-      sys.exit(1)
+      os._exit(1)
 
 
 # init argument parser
@@ -229,6 +441,45 @@ signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
 signal.signal(signal.SIGHUP,signalHandler) # hang-up or death of controlling process
 signal.signal(signal.SIGTERM,signalHandler) # terminate request
 
+# initialize USB-4761 IO module
+log.debug('Initializing USB-4761 IO module...')
+try:
+	import bdaqctrl
+except ImportError as e:
+	log.critical('Error: Can not load bdaqctrl module.\n'
+	             '   Error string: '+e.msg+'.')
+	exit(1)
+deviceInformation=bdaqctrl.DeviceInformation('USB-4761,BID#0')
+instantDiCtrl=bdaqctrl.AdxInstantDiCtrlCreate()
+instantDoCtrl=bdaqctrl.AdxInstantDoCtrlCreate()
+r1=instantDiCtrl.setSelectedDevice(deviceInformation)
+r2=instantDoCtrl.setSelectedDevice(deviceInformation)
+if(r1!=0 or r2!=0):
+	log.critical('Error: Can not connect to USB-4761 device.')
+	exit(1)
+uint8Data=bdaqctrl.uint8()
+r1=instantDiCtrl.Read(0,uint8Data)
+r2=instantDoCtrl.Write(0,0)
+if(r1!=0 or r2!=0):
+	log.critical('Error: Can not write to USB-4761 device.')
+	exit(1)
+log.info('USB-4761 IO module initialized successfully.')
+
+# initialize computers
+computerListText=''
+runningComputers=''
+for pc in computerList:
+	pc.status=Status.OFF
+	pc.connection=None
+	if computerListText=='': computerListText=pc.name
+	else: computerListText+=', '+pc.name
+if computerListText=='': computerListText='none'
+if runningComputers=='': runningComputers='none'
+log.info('Initializing computers: '+computerListText)
+log.info('Currently running computers: '+runningComputers)
+del computerListText
+del runningComputers
+
 # create listeningPortFile
 if listeningPortFilePath:
    try:
@@ -247,7 +498,7 @@ if listeningPortFilePath:
       exit(1)
 
 # create listening socket
-log.info('Initializing network:')
+log.debug('Initializing network:')
 loop=asyncio.get_event_loop()
 if pcwakerListeningPort!=0:
 	coro=asyncio.start_server(serverConnectionHandler,'',pcwakerListeningPort,loop=loop)
@@ -306,66 +557,17 @@ if args.signal_start_to_parent:
 try:
 	loop.run_forever()
 finally:
+	log.debug('Mainloop left, entering cleanUp().')
+	cleanUp()
 
-	# send log messages to shutdownLog as well (they will be sent over network)
-	if shutdownLog:
-		log.parent=shutdownLog
-
-	# close server (and its listening socket)
-	log.info('Server stopped.');
-	server.close()
-
-# wait on server closing
-log.info('Terminating...')
-loop.run_until_complete(server.wait_closed())
-if restartFlag:
-
-	# restart the process
-	log.info('Restarting process...')
-	p=subprocess.Popen(["./pcwakerd","--init-print-log"],stdout=subprocess.PIPE)
-
-	# write new process output to log
-	# (but first remove termintating '\n')
-	s=p.stdout.read().decode(errors='replace')
-	if len(s)>0 and s[-1]=='\n':
-		s=s[:-1]
-	log.info(s)
-
-else:
-	log.info('Done.')
-
-# close connection to the client that initiated daemon shut down
-# (we used the connection to forward all log messages)
-if shutdownLog:
-	shutdownLog.handlers[0].writer.close()
-
-# perform clean up
-loop.close()
-log.debug('Clean up complete.');
+log.debug('Calling final exit().')
 sys.exit(0)
 
 
 import subprocess
 import threading
 
-
-StatusOff=1
-StatusBooting=2
-StatusOn=3
-StatusLostConnection=4
-StatusShuttingDown=5
-
-stopFlag=False
 threadList=[]
-
-
-def getComputer(name):
-   global computerList
-   pcList=[x for x in computerList if name in x.names]
-   if len(pcList)==0:
-      return None
-   else:
-      return pcList[0]
 
 
 def getComputerStatus(pc):
