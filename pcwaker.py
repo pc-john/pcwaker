@@ -30,7 +30,7 @@ async def clientConnectionHandler(message):
 
 	# send message
 	print('Sending message '+str(message)+'.')
-	stream_write_message(writer,MSG_WAKER,message)
+	stream_write_message(writer,MSG_USER,message)
 	writer.write_eof()
 
 	# receive messages
@@ -155,7 +155,7 @@ while True:
    msgType,data=stream.recv()
    if msgType==MSG_EOF:
       break
-   if msgType==MSG_WAKER:
+   if msgType==MSG_USER:
       print(pickle.loads(data),end='')
    if msgType==MSG_LOG and not machineReadable:
       print(data.decode(errors='replace'),end='')

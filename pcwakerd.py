@@ -15,7 +15,7 @@
 #
 #    Prints the status of specified computer and OS booted as
 #    some computers have more OS installed. Status can be:
-#    OFF, ON, OCCUPIED, BOOTING-UP, SHUTTING-DOWN.
+#    OFF, ON, STARTING, STOPPING, FROZEN, START_AFTER_STOPPED, STOP_AFTER_STARTED.
 #    If no computer names are given, all configured computers
 #    are printed.
 #
@@ -49,11 +49,11 @@
 #
 # Computer states and transitions:
 # OFF - no power, no connection
-#     - start - sends power signal and waits with timeout for power sense,
+#     - start - send 0.5s power signal and test for power sense,
 #               on success move to STARTING state, on failure keep OFF state
 #     - stop - ignored
 #     - kill - ignored
-#     - command - prints error
+#     - command - print error, if connection exists, print warning but execute the command
 #     - power detected ->STARTING
 #     - connection detected -> check power and move to ON on power or keep OFF if no power
 #     - connection lost -> keep OFF
@@ -61,7 +61,7 @@
 # STARTING - power, no connection
 #          - start - ignored
 #          - stop ->STOP_WHEN_CONNECTED
-#          - kill - sends 4 second signal, checks for power down,
+#          - kill - send 4 second signal, check for power down,
 #                   on success ->OFF, on failure ->FROZEN
 #          - command - prints error
 #          - power lost ->OFF
@@ -70,9 +70,9 @@
 #          - timeout -> FROZEN
 # ON - power, connection
 #    - start - ignored
-#    - stop - performs shutdown procedure that might be potentially stopped by client
+#    - stop - perform shutdown procedure that might be potentially stopped by the client
 #             on success ->STOPPING, on failure -> keep ON
-#    - kill - sends 4 second signal, checks for power down,
+#    - kill - send 4 second signal, check for power down,
 #             on success ->OFF, on failure -> keep ON
 #    - command - ok
 #    - power lost ->OFF
@@ -82,7 +82,7 @@
 # STOPPING - power, unsure connection
 #          - start ->START_AFTER_STOPPED
 #          - stop - ignored
-#          - kill - sends 4 second signal, checks for power down,
+#          - kill - send 4 second signal, check for power down,
 #                   on success ->OFF, on failure ->FROZEN
 #          - command - print error, except internal commands before connection is closed
 #          - power lost ->OFF
@@ -93,20 +93,11 @@
 #        - power lost ->OFF
 #        - start - ignored
 #        - stop - ignored
-#        - kill - sends 4 second signal, checks for power down,
+#        - kill - send 4 second signal, check for power down,
 #                 on success ->OFF, on failure -> keep FROZEN
 #        - connection appeared ->ON
 #        - connection lost -> keep FROZEN
 #        - no timeout
-# STOP_AFTER_STARTED - power, shortly connection
-#                    - start ->STARTING
-#                    - stop - ignored
-#                    - kill - usual procedure, on success ->OFF, on failure ->FROZEN
-#                    - command - print error
-#                    - power lost ->OFF
-#                    - connection appeared - send command and ->STOPPING
-#                    - connection lost ->FROZEN
-#                    - timeout ->FROZEN
 # START_AFTER_STOPPED - shortly without power, no connection
 #                     - must install periodical power checker
 #                     - start - ignored
@@ -117,6 +108,15 @@
 #                     - connection appeared ->ON
 #                     - connection lost ->FROZEN
 #                     - timeout ->FROZEN
+# STOP_AFTER_STARTED - power, shortly connection
+#                    - start ->STARTING
+#                    - stop - ignored
+#                    - kill - usual procedure, on success ->OFF, on failure ->FROZEN
+#                    - command - print error
+#                    - power lost ->OFF
+#                    - connection appeared - send command and ->STOPPING
+#                    - connection lost ->FROZEN
+#                    - timeout ->FROZEN
 #
 
 import argparse
@@ -128,6 +128,7 @@ import pickle
 import signal
 import socket
 import sys
+import time
 import traceback
 from pcwaker_common import *
 from pcconfig import *
@@ -137,10 +138,18 @@ from pcconfig import *
 terminatingSignalHandled=False
 restartFlag=False
 shutdownLog=None
+
+# variables requiring deviceLock for safe access
+# (this includes all access to USB-4761 device,
+# all access to mutable computer data in computerList
+# and getComputerStatus() function)
 deviceLock=asyncio.Lock()
+powerInputBits=None
+powerOutputBits=0
 
 # constants
 class Status:
+
 	OFF=1
 	STARTING=2
 	ON=3
@@ -149,27 +158,52 @@ class Status:
 	START_AFTER_STOPPED=6
 	STOP_AFTER_STARTED=7
 
+	def str(status):
+		return _status2string.get(status,"unknown")
+
+_status2string={
+	Status.OFF:      "OFF",
+	Status.STARTING: "STARTING",
+	Status.ON:       "ON",
+	Status.STOPPING: "STOPPING",
+	Status.FROZEN:   "FROZEN",
+	Status.START_AFTER_STOPPED: "START_AFTER_STOPPED",
+	Status.STOP_AFTER_STARTED:  "STOP_AFTER_STARTED",
+}
 
 
-# log handler that sends log messages over the stream back to the client
-class ConnectionLogHandler(logging.Handler):
 
-	def __init__(self,writer):
-		logging.Handler.__init__(self)
-		self.writer=writer
+def getComputerStatus(pc,powerInputBits):
 
-	def emit(self,record):
-		# multithreaded lock is in handle() method,
-		# thus only single thread may enter this method
-		try:
-			text=self.format(record)
-			stream_write_message(self.writer,MSG_LOG,text)
-		except Exception:
-			self.handleError(record)
+	# handle power lost (except OFF and START_AFTER_STOPPED states)
+	if pc.status!=Status.OFF and pc.status!=Status.START_AFTER_STOPPED:
+		# on power lost ->OFF
+		if powerInputBits&pc.powerBitMask==0:
+			pc.status=Status.OFF
+
+	# status OFF
+	if pc.status==Status.OFF:
+		# on power ->STARTING
+		if powerInputBits&pc.powerBitMask!=0:
+			pc.status=Status.STARTING
+
+	# status STARTING
+	elif pc.status==Status.STARTING:
+		pass
+
+	# status ON
+	elif pc.status==Status.ON:
+		pass
+
+		#if pc.connection!=None:
+		#	log.error('Network connection exists to not powered computer '+pc.name+'. Check your wiring.')
+
+	return pc.status
 
 
 async def serverConnectionHandler(reader,writer):
 
+	global powerOutputBits
 	wlog=None
 	try:
 
@@ -189,7 +223,7 @@ async def serverConnectionHandler(reader,writer):
 			msgType,message=await stream_read_message(reader)
 
 			# process messages from pcwaker.py
-			if msgType==MSG_WAKER:
+			if msgType==MSG_USER:
 
 				# decode data
 				params=message
@@ -221,50 +255,177 @@ async def serverConnectionHandler(reader,writer):
 					wlog.error('Unknown parameter 1: '+params[1])
 					break
 
+				# status of computer(s)
+				elif params[0]=='status':
+
+					# parse --machine-readable if present
+					p=params[1:]
+					machineReadable=len(p)>0 and p[0]=='--machine-readable'
+					if machineReadable:
+						p=p[1:]
+
+					# get computer list
+					if len(p)==0:
+						list=computerList
+					else:
+						list=[]
+						for name in p:
+							pc=getComputer(name)
+							if pc==None:
+								wlog.critical(name+' is not a configured computer.')
+							else:
+								list.append(pc)
+
+					# print result
+					await deviceLock.acquire()
+					try:
+						# read computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						if machineReadable:
+							for pc in list:
+								s=Status.str(getComputerStatus(pc,powerInputBits.value()))
+								stream_write_message(writer,MSG_USER,pickle.dumps(s,protocol=2))
+						else:
+							for pc in list:
+								s=Status.str(getComputerStatus(pc,powerInputBits.value()))
+								wlog.critical('Computer '+pc.name+':')
+								wlog.critical('   Status: '+s)
+					finally:
+						deviceLock.release()
+					break
+
 				# start computer
 				elif params[0]=='start':
 					if len(params)==1:
 						wlog.error('Error: No computer(s) specified.')
 					else:
-						list=[]
-						ok=True
-						for name in params[1:]:
-							pc=getComputer(name)
-							if pc==None:
-								wlog.critical(name+' is not a configured computer.')
-								ok=False
-							else:
-								list.append(pc)
-						if not ok:
+
+						# get computer
+						pc=getComputer(params[1])
+						if pc==None:
+							wlog.critical(params[1]+' is not a configured computer.')
 							break
+
 						await deviceLock.acquire()
+						status=None
 						try:
-							for pc in list:
-								status=getComputerStatus(pc)
-								if status==StatusOff:
-									# if off, start it
-									wlog.info('Starting computer '+pc.name+'...')
-									GPIO.output(pc.pinPowerButton,1)
-									time.sleep(0.5)
-									GPIO.output(pc.pinPowerButton,0)
-									time.sleep(0.1)
-									if GPIO.input(pc.pinPowerSense)==0:
-										wlog.critical('Failed to start computer '+pc.name+'.')
-										pc.booting=False
-									else:
-										wlog.critical('Computer '+pc.name+' successfully started.')
-										pc.booting=True
-									pc.shutdownRequested=False
-								else:
-									if status==StatusOn:
-										# if on, do nothing
-										wlog.critical('Computer '+pc.name+' is already running (status: ON).')
-									else:
-										# if booting or shutting down, print error
-										wlog.critical('Can not start computer '+pc.name+'. It is not in OFF state (currently: '+statusToString(status)+').')
+							# read computer state
+							r=dataInput.Read(0,powerInputBits)
+							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+							status=getComputerStatus(pc,powerInputBits.value())
+
+							# if OFF, activate power signal
+							if status==Status.OFF:
+								wlog.info('Starting computer '+pc.name+'...')
+								powerOutputBits|=pc.powerBitMask
+								dataOutput.Write(0,powerOutputBits)
+
+							# in STARTING, do noting
+							elif status==Status.STARTING:
+								wlog.info('Computer '+pc.name+' is already starting.')
+
+							# in ON, do nothing
+							elif status==Status.ON:
+								wlog.info('Computer '+pc.name+' is already running.')
+
+							# in STOPPING, move to START_AFTER_STOPPED
+							elif status==Status.STOPPING:
+								wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
+								pc.status=Status.START_AFTER_STOPPED
+								# activate periodical state checker here
+
+							# in START_AFTER_STOPPED, do nothing
+							elif status==Status.START_AFTER_STOPPED:
+								wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
+
+							# in STOP_AFTER_STARTED, move to STARTING
+							elif status==Status.STOP_AFTER_STARTED:
+								wlog.info('Computer '+pc.name+' is scheduled to shutdown. Canceling shutdown.')
+								pc.status=Status.STARTING
+								# deactivate periodical state checker here
+
+							# in FROZEN, do nothing
+							elif status==Status.FROZEN:
+								wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
+								          '   You might try to power it down by kill command or wait some moments\n'
+								          '   (it might be busy installing updates during shutdown, power up, etc).')
+
+							# unknown state
+							else:
+								wlog.critical('Computer '+pc.name+' is in unknown state.')
+
 						finally:
 							deviceLock.release()
+
+						# if status was originally OFF, deactivate power signal after 0.5s and re-read computer state
+						if status==Status.OFF:
+							time.sleep(0.5)
+							await deviceLock.acquire()
+							try:
+
+								# if OFF, deactivate power signal after 0.5s
+								powerOutputBits&=~pc.powerBitMask
+								dataOutput.Write(0,powerOutputBits)
+
+								# read power state
+								r=dataInput.Read(0,powerInputBits)
+								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+								status=getComputerStatus(pc,powerInputBits.value())
+
+							finally:
+								deviceLock.release()
+
+							if status==Status.OFF:
+								wlog.critical('Failed to start computer '+pc.name+'.')
+							elif status==Status.STARTING:
+								wlog.critical('Computer '+pc.name+' successfully started.')
+							else:
+								wlog.critical('Computer '+pc.name+' successfully started (state: '+Status.str(status)+').')
+
 					break
+
+				# unknown command
+				else:
+					wlog.error('Unknown command: '+params[0])
+				break
+
+			# process messages from client processes on monitored computers
+			elif msgType==MSG_COMPUTER:
+
+				# decode data
+				params=pickle.loads(message)
+				wlog.debug('Message received from computer: '+str(params))
+
+				# ignore empty messages
+				if len(params)==0:
+					continue
+
+				# Got alive message
+				if params[0]=='Got alive':
+					if len(params)>=2: computerName=params[1]
+					else: computerName=None
+					pc=getComputer(computerName)
+					if pc!=None:
+						await deviceLock.acquire()
+						try:
+							if pc.status!=Status.STOP_AFTER_STARTED:
+								# move to ON status
+								pc.status=Status.ON
+								pc.reader=reader
+								pc.writer=writer
+							else:
+								pass # send stop command here
+						finally:
+							deviceLock.release()
+						log.critical('Computer '+pc.name+' got alive')
+					else:
+						log.critical('Computer '+params[1]+' attempt to announce it is alive, but it is not a registered computer.')
+						break
+
+				# unknown message
+				else:
+					wlog.error('Unknown computer message data: '+str(data))
 
 	except Exception as e:
 		wlog.critical('\nException raised: '+type(e).__name__+'\n'+
@@ -287,6 +448,23 @@ def getComputer(name):
 		return None
 	else:
 		return pcList[0]
+
+
+# log handler that sends log messages over the stream back to the client
+class ConnectionLogHandler(logging.Handler):
+
+	def __init__(self,writer):
+		logging.Handler.__init__(self)
+		self.writer=writer
+
+	def emit(self,record):
+		# multithreaded lock is in handle() method,
+		# thus only single thread may enter this method
+		try:
+			text=self.format(record)
+			stream_write_message(self.writer,MSG_LOG,text)
+		except Exception:
+			self.handleError(record)
 
 
 def cleanUp():
@@ -325,16 +503,16 @@ def cleanUp():
 		del serverTmp
 
 	# dispose USB-4761 IO module
-	if 'instantDiCtrl' in globals() or 'instantDoCtrl' in globals():
+	if 'dataInput' in globals() or 'dataOutput' in globals():
 		log.info('Cleaning up USB-4761 IO module...')
-	if 'instantDiCtrl' in globals():
-		global instantDiCtrl
-		instantDiCtrl.Dispose()
-		del instantDiCtrl
-	if 'instantDoCtrl' in globals():
-		global instantDoCtrl
-		instantDoCtrl.Dispose()
-		del instantDoCtrl
+	if 'dataInput' in globals():
+		global dataInput
+		dataInput.Dispose()
+		del dataInput
+	if 'dataOutput' in globals():
+		global dataOutput
+		dataOutput.Dispose()
+		del dataOutput
 
 	if restartFlag:
 
@@ -372,7 +550,7 @@ def cleanUp():
 def signalHandler(signum,stackframe):
 
    # translate signum to text
-   sig2text={1:'HUP',15:'TERM',signal.SIGINT:'Ctrl-C'}
+   sig2text={signal.SIGHUP:'HUP',signal.SIGTERM:'TERM',signal.SIGINT:'Ctrl-C'}
    if signum in sig2text:
       sigName=sig2text[signum]
    else:
@@ -384,19 +562,16 @@ def signalHandler(signum,stackframe):
       terminatingSignalHandled=True
 
       # log message
-      if signum==signal.SIGINT:
-         log.critical('Ctrl-C signal received. Terminating...')
-      else:
-         log.critical(sigName+' signal received. Terminating...')
+      log.critical(sigName+' signal received. Terminating...')
 
-      # clean up and exit
+      # exit (clean up is performed in finally clauses)
       sys.exit(1)
 
    else:
 
-      # log message and exit
+      # log message and exit without any clean up
       log.critical('Another terminating signal ('+sigName+') received. Terminating immediately.')
-      os._exit(1)
+      os._exit(2)
 
 
 # init argument parser
@@ -450,16 +625,17 @@ except ImportError as e:
 	             '   Error string: '+e.msg+'.')
 	exit(1)
 deviceInformation=bdaqctrl.DeviceInformation('USB-4761,BID#0')
-instantDiCtrl=bdaqctrl.AdxInstantDiCtrlCreate()
-instantDoCtrl=bdaqctrl.AdxInstantDoCtrlCreate()
-r1=instantDiCtrl.setSelectedDevice(deviceInformation)
-r2=instantDoCtrl.setSelectedDevice(deviceInformation)
+dataInput=bdaqctrl.AdxInstantDiCtrlCreate()
+dataOutput=bdaqctrl.AdxInstantDoCtrlCreate()
+r1=dataInput.setSelectedDevice(deviceInformation)
+r2=dataOutput.setSelectedDevice(deviceInformation)
 if(r1!=0 or r2!=0):
 	log.critical('Error: Can not connect to USB-4761 device.')
 	exit(1)
-uint8Data=bdaqctrl.uint8()
-r1=instantDiCtrl.Read(0,uint8Data)
-r2=instantDoCtrl.Write(0,0)
+powerInputBits=bdaqctrl.uint8()
+powerOutputBits=0
+r1=dataInput.Read(0,powerInputBits)
+r2=dataOutput.Write(0,0)
 if(r1!=0 or r2!=0):
 	log.critical('Error: Can not write to USB-4761 device.')
 	exit(1)
@@ -470,7 +646,8 @@ computerListText=''
 runningComputers=''
 for pc in computerList:
 	pc.status=Status.OFF
-	pc.connection=None
+	pc.reader=None
+	pc.writer=None
 	if computerListText=='': computerListText=pc.name
 	else: computerListText+=', '+pc.name
 if computerListText=='': computerListText='none'
@@ -565,35 +742,8 @@ sys.exit(0)
 
 
 import subprocess
-import threading
 
 threadList=[]
-
-
-def getComputerStatus(pc):
-   if GPIO.input(pc.pinPowerSense)==0:
-      return StatusOff
-   else:
-      if pc.shutdownRequested:
-         return StatusShuttingDown
-      else:
-         if pc.booting:
-            return StatusBooting
-         if pc.stream is None:
-            return StatusLostConnection
-         else:
-            return StatusOn
-
-
-def statusToString(status):
-   m={
-      StatusOff:     "OFF",
-      StatusBooting: "Booting",
-      StatusOn:      "ON",
-      StatusLostConnection: "Lost connection",
-      StatusShuttingDown:   "Shutting down"
-   }
-   return m.get(status,"unknown")
 
 
 class WorkerThread(threading.Thread):
@@ -644,73 +794,10 @@ class WorkerThread(threading.Thread):
             # status of computer(s)
             elif params[0]=='status':
 
-               # parse --machine-readable if present
-               p=params[1:]
-               machineReadable=len(p)>0 and p[0]=='--machine-readable'
-               if machineReadable:
-                  p=p[1:]
-
-               # get computer list
-               if len(p)==0:
-                  list=computerList
-               else:
-                  list=[]
-                  for name in p:
-                     pc=getComputer(name)
-                     if pc==None:
-                        wlog.critical(name+' is not a configured computer.')
-                     else:
-                        list.append(pc)
-
-               # print result
-               if machineReadable:
-                  for pc in list:
-                     self.stream.send(MSG_WAKER,pickle.dumps(statusToString(getComputerStatus(pc)),protocol=2))
-               else:
-                  for pc in list:
-                     wlog.critical('Computer '+pc.name+':')
-                     wlog.critical('   Status: '+statusToString(getComputerStatus(pc)))
                break
 
             # start computer
             elif params[0]=='start':
-               if len(params)==1:
-                  wlog.error('Error: No computer(s) specified.')
-               else:
-                  list=[]
-                  ok=True
-                  for name in params[1:]:
-                     pc=getComputer(name)
-                     if pc==None:
-                        wlog.critical(name+' is not a configured computer.')
-                        ok=False
-                     else:
-                        list.append(pc)
-                  if not ok:
-                     break
-                  for pc in list:
-                     status=getComputerStatus(pc)
-                     if status==StatusOff:
-                        # if off, start it
-                        wlog.info('Starting computer '+pc.name+'...')
-                        GPIO.output(pc.pinPowerButton,1)
-                        time.sleep(0.5)
-                        GPIO.output(pc.pinPowerButton,0)
-                        time.sleep(0.1)
-                        if GPIO.input(pc.pinPowerSense)==0:
-                           wlog.critical('Failed to start computer '+pc.name+'.')
-                           pc.booting=False
-                        else:
-                           wlog.critical('Computer '+pc.name+' successfully started.')
-                           pc.booting=True
-                        pc.shutdownRequested=False
-                     else:
-                        if status==StatusOn:
-                           # if on, do nothing
-                           wlog.critical('Computer '+pc.name+' is already running (status: ON).')
-                        else:
-                           # if booting or shutting down, print error
-                           wlog.critical('Can not start computer '+pc.name+'. It is not in OFF state (currently: '+statusToString(status)+').')
                break
 
             # stop computer
@@ -742,7 +829,7 @@ class WorkerThread(threading.Thread):
                            pass
                         else:
                            # if booting or shutting down, print error
-                           wlog.critical('Can not stop computer '+pc.name+'. It is not in ON state (currently '+statusToString(status)+').')
+                           wlog.critical('Can not stop computer '+pc.name+'. It is not in ON state (currently '+Status.str(status)+').')
                break
 
             # kill computer
@@ -815,31 +902,7 @@ class WorkerThread(threading.Thread):
          # process messages from client processes on monitored computers
          if msgType==MSG_COMPUTER:
 
-            # decode data
-            params=pickle.loads(data)
-            wlog.debug('Message received from computer: '+str(params))
-
-            # ignore empty messages
-            if len(params)==0:
-               continue
-
-            # Got alive message
-            if params[0]=='Got alive':
-               if len(params)>=2: computerName=params[1]
-               else: computerName=None
-               pc=getComputer(computerName)
-               if pc!=None:
-                  pc.stream=self.stream
-                  pc.booting=False
-                  self.associatedComputer=pc
-                  log.critical('Computer '+pc.name+' got alive')
-               else:
-                  log.critical('Computer '+params[1]+' attempt to announce it is alive, but it is not a registered computer.')
-                  break
-
-            # unknown message
-            else:
-               wlog.error('Unknown computer message data: '+str(data))
+            ...
 
          # EOF - connection closed
          if msgType==MSG_EOF:

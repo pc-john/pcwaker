@@ -6,18 +6,14 @@ pcwakerServerAddress=('cadwork-pi.fit.vutbr.cz',pcwakerListeningPort)
 
 # computers
 class pcCore2:
-   name='Core2'
-   names=[name]
-   pinPowerButton=17
-   pinPowerSense=4
-   pinConnectionOkLED=18
+	name='Core2'
+	names=[name]
+	powerBitMask=0x40
 
 class pcP4:
-   name='P4'
-   names=[name]
-   pinPowerButton=22
-   pinPowerSense=23
-   pinConnectionOkLED=27
+	name='P4'
+	names=[name]
+	powerBitMask=0x80
 
 computerList=[pcP4,pcCore2]
 
