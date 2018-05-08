@@ -56,7 +56,7 @@ def connectionHandler():
 					# read msgType
 					data=yield from reader.read(4)
 					if len(data)!=4:
-						if len(data)==0 and reader.at_eof(): return MSG_EOF,b''
+						if len(data)==0 and reader.at_eof(): break
 						raise OSError(84,'Illegal byte sequence.')
 					msgType,=struct.unpack_from('!I',data,0)
 
@@ -72,6 +72,7 @@ def connectionHandler():
 
 					# EOF - connection closed
 					if msgType==MSG_EOF:
+						print('Server closed the connection.')
 						break
 
 					elif msgType==MSG_COMPUTER:
@@ -132,17 +133,21 @@ def connectionHandler():
 
 								except OSError:
 									print('Error: Failed to run command: '+str(params[1:])+'.')
+							continue
 
 						# unknown param
 						else:
 							print('Unknown command '+str(params))
+							continue
 
 					# print info messages
 					elif msgType==MSG_LOG:
 						print('Server info: '+str(message),end='')
+						continue
 
 					else:
 						print('Unknown message type')
+						continue
 
 			finally:
 				# close connection

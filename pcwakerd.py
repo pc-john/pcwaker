@@ -238,7 +238,7 @@ async def serverConnectionHandler(reader,writer):
 
 					if len(params)==1:
 						wlog.error('Error: Not enough arguments for daemon parameter.')
-						break
+						continue
 
 					if params[1]=='stop' or params[1]=='restart':
 						global restartFlag
@@ -253,7 +253,7 @@ async def serverConnectionHandler(reader,writer):
 						continue
 
 					wlog.error('Unknown parameter 1: '+params[1])
-					break
+					continue
 
 				# status of computer(s)
 				elif params[0]=='status':
@@ -293,19 +293,19 @@ async def serverConnectionHandler(reader,writer):
 								wlog.critical('   Status: '+s)
 					finally:
 						deviceLock.release()
-					break
+					continue
 
 				# start computer
 				elif params[0]=='start':
 					if len(params)==1:
-						wlog.error('Error: No computer(s) specified.')
+						wlog.error('Error: No computer specified.')
 					else:
 
 						# get computer
 						pc=getComputer(params[1])
 						if pc==None:
 							wlog.critical(params[1]+' is not a configured computer.')
-							break
+							continue
 
 						await deviceLock.acquire()
 						status=None
@@ -316,6 +316,7 @@ async def serverConnectionHandler(reader,writer):
 							status=getComputerStatus(pc,powerInputBits.value())
 
 							# if OFF, activate power signal
+							# (the rest will be performed bellow after 0.5s)
 							if status==Status.OFF:
 								wlog.info('Starting computer '+pc.name+'...')
 								powerOutputBits|=pc.powerBitMask
@@ -382,8 +383,69 @@ async def serverConnectionHandler(reader,writer):
 								wlog.critical('Computer '+pc.name+' successfully started.')
 							else:
 								wlog.critical('Computer '+pc.name+' successfully started (state: '+Status.str(status)+').')
+					continue
 
-					break
+				# stop computer
+				elif params[0]=='stop':
+					if len(params)==1:
+						wlog.error('Error: No computer(s) specified.')
+					else:
+
+						# get computer
+						pc=getComputer(params[1])
+						if pc==None:
+							wlog.critical(params[1]+' is not a configured computer.')
+							continue
+
+						await deviceLock.acquire()
+						try:
+							# read computer state
+							r=dataInput.Read(0,powerInputBits)
+							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+							status=getComputerStatus(pc,powerInputBits.value())
+
+							# if OFF, do nothing
+							if status==Status.OFF:
+								wlog.info('Computer '+pc.name+' is already powered off.')
+
+							# in STARTING, move to STOP_AFTER_STARTED
+							elif status==Status.STARTING:
+								wlog.info('Computer '+pc.name+' is starting. It will be stopped after booting up.')
+								pc.status=Status.STOP_AFTER_STARTED
+
+							# in ON, send shutdown message and move to STOPPING
+							elif status==Status.ON:
+								wlog.info('Stopping computer '+pc.name+'...')
+								stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
+								pc.status=Status.STOPPING
+
+							# in STOPPING, do noting
+							elif status==Status.STOPPING:
+								wlog.info('Computer '+pc.name+' is already shutting down.')
+
+							# in START_AFTER_STOPPED, move to STOPPING
+							elif status==Status.START_AFTER_STOPPED:
+								wlog.info('Computer '+pc.name+' is scheduled to start after shutdown. Cancelling start.')
+								pc.status=Status.STOPPING
+								# deactivate periodical state checker here
+
+							# in STOP_AFTER_STARTED, do noting
+							elif status==Status.STOP_AFTER_STARTED:
+								wlog.info('Computer '+pc.name+' is already scheduled to shutdown.')
+
+							# in FROZEN, do nothing
+							elif status==Status.FROZEN:
+								wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
+								          '   You might try to power it down by kill command or wait some moments\n'
+								          '   (it might be busy installing updates during shutdown, power up, etc).')
+
+							# unknown state
+							else:
+								wlog.critical('Computer '+pc.name+' is in unknown state.')
+
+						finally:
+							deviceLock.release()
+					continue
 
 				# unknown command
 				else:
@@ -650,10 +712,13 @@ for pc in computerList:
 	pc.writer=None
 	if computerListText=='': computerListText=pc.name
 	else: computerListText+=', '+pc.name
+	if getComputerStatus(pc,powerInputBits.value())!=Status.OFF:
+		if runningComputers=='': runningComputers=pc.name
+		else: runningComputers+=', '+pc.name
 if computerListText=='': computerListText='none'
 if runningComputers=='': runningComputers='none'
 log.info('Initializing computers: '+computerListText)
-log.info('Currently running computers: '+runningComputers)
+log.info('Currently powered on computers: '+runningComputers)
 del computerListText
 del runningComputers
 
