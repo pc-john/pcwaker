@@ -27,6 +27,7 @@ MSG_COMPUTER=3     # messages exchanged bettwen pcwaker_client.py (client comput
 terminatingSignalHandled=False
 
 
+@asyncio.coroutine
 def connectionHandler():
 
 	# repeat connection attempts whenever connection gets broken
@@ -171,6 +172,12 @@ def stream_write_message(writer,msgType,message):
 	writer.write(data)
 
 
+def signalCallback(text):
+	# print message and cancel connectionHandler task
+	print(text)
+	task.cancel()
+
+
 def signalHandler(signum,stackframe):
 
 	# translate signum to text
@@ -185,11 +192,8 @@ def signalHandler(signum,stackframe):
 	if not terminatingSignalHandled:
 		terminatingSignalHandled=True
 
-		# log message
-		print(sigName+' signal received. Terminating...')
-
-		# exit (clean up is performed in finally clauses)
-		sys.exit(0)
+		# schedule signalCallback for execution
+		loop.call_soon_threadsafe(signalCallback,sigName+' signal received. Terminating...')
 
 	else:
 
@@ -213,11 +217,8 @@ def consoleCtrlHandler(signum,func=None):
 	if not terminatingSignalHandled:
 		terminatingSignalHandled=True
 
-		# log message
-		print(sigName+' received. Terminating...')
-
-		# exit (clean up is performed in finally clauses)
-		sys.exit(0)
+		# schedule signalCallback for execution
+		loop.call_soon_threadsafe(signalCallback,sigName+' received. Terminating...')
 
 	else:
 
@@ -226,26 +227,32 @@ def consoleCtrlHandler(signum,func=None):
 		os._exit(1)
 
 
-# signal handlers
-signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
-signal.signal(signal.SIGTERM,signalHandler) # termination request
-if os.name=='posix':
-	signal.signal(signal.SIGHUP,signalHandler) # hang-up or death of controlling process
-if os.name=='nt':
-	try:
-		import win32api
-		win32api.SetConsoleCtrlHandler(consoleCtrlHandler,True)
-	except ImportError:
-		version='.'.join(map(str,sys.version_info))
-		print('Error: pywin32 not installed for Python '+version+'.')
-
-# main loop
-# handles reconnects if connection is broken
-print('Starting pcwaker client daemon. Use Ctrl-C to stop the daemon.')
+# initialization
 loop=asyncio.get_event_loop()
 try:
-	loop.run_until_complete(connectionHandler())
+	task=loop.create_task(connectionHandler())
+
+	# signal handlers
+	signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
+	signal.signal(signal.SIGTERM,signalHandler) # termination request
+	if os.name=='posix':
+		signal.signal(signal.SIGHUP,signalHandler) # hang-up or death of controlling process
+	if os.name=='nt':
+		try:
+			import win32api
+			win32api.SetConsoleCtrlHandler(consoleCtrlHandler,True)
+		except ImportError:
+			version='.'.join(map(str,sys.version_info))
+			print('Error: pywin32 not installed for Python '+version+'.')
+
+	# main loop
+	print('Starting pcwaker client daemon. Use Ctrl-C to stop the daemon.')
+	loop.run_until_complete(task)
+
+except asyncio.CancelledError:
+	pass # just catch and ignore the exception
 finally:
+	print("Cleaning up...")
 	loop.close()
 
 print('Terminating pcwaker client daemon successfully.')
