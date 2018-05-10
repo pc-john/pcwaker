@@ -175,17 +175,21 @@ _status2string={
 
 def getComputerStatus(pc,powerInputBits):
 
-	# handle power lost (except OFF and START_AFTER_STOPPED states)
-	if pc.status!=Status.OFF and pc.status!=Status.START_AFTER_STOPPED:
-		# on power lost ->OFF
+	# handle power up and power lost (except OFF and START_AFTER_STOPPED states)
+	if pc.status==Status.OFF:
+		# OFF: on power ->STARTING
+		if powerInputBits&pc.powerBitMask!=0:
+			pc.status=Status.STARTING
+	elif pc.status==Status.START_AFTER_STOPPED:
+		pass # not implemented yet
+	else:
+		# all remaining states: on power lost ->OFF
 		if powerInputBits&pc.powerBitMask==0:
 			pc.status=Status.OFF
 
 	# status OFF
 	if pc.status==Status.OFF:
-		# on power ->STARTING
-		if powerInputBits&pc.powerBitMask!=0:
-			pc.status=Status.STARTING
+		pass
 
 	# status STARTING
 	elif pc.status==Status.STARTING:
@@ -193,10 +197,24 @@ def getComputerStatus(pc,powerInputBits):
 
 	# status ON
 	elif pc.status==Status.ON:
+		if pc.writer==None:
+			pc.status=Status.FROZEN
+
+	# status STOPPING
+	elif pc.status==Status.STOPPING:
 		pass
 
-		#if pc.connection!=None:
-		#	log.error('Network connection exists to not powered computer '+pc.name+'. Check your wiring.')
+	# status FROZEN
+	elif pc.status==Status.FROZEN:
+		pass
+
+	# status START_AFTER_STOPPED
+	elif pc.status==Status.START_AFTER_STOPPED:
+		pass
+
+	# status STOP_AFTER_STARTED
+	elif pc.status==Status.STOP_AFTER_STARTED:
+		pass
 
 	return pc.status
 
@@ -205,6 +223,7 @@ async def serverConnectionHandler(reader,writer):
 
 	global powerOutputBits
 	wlog=None
+	aliveComputerAssociation=None
 	try:
 
 		# initialize log
@@ -222,8 +241,27 @@ async def serverConnectionHandler(reader,writer):
 			# receive the messageq
 			msgType,message=await stream_read_message(reader)
 
+			# handle closed connection
+			if msgType==MSG_EOF:
+				if aliveComputerAssociation:
+
+					# do not close writer, this will be made on this function exit
+					pc=aliveComputerAssociation
+					await deviceLock.acquire()
+					try:
+						aliveComputerAssociation.writer=None
+						aliveComputerAssociation.reader=None
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						getComputerStatus(aliveComputerAssociation,powerInputBits.value())
+						aliveComputerAssociation=None
+					finally:
+						deviceLock.release()
+					wlog.info('Computer '+pc.name+' disconnected.')
+				break
+
 			# process messages from pcwaker.py
-			if msgType==MSG_USER:
+			elif msgType==MSG_USER:
 
 				# decode data
 				params=message
@@ -476,6 +514,12 @@ async def serverConnectionHandler(reader,writer):
 								pc.status=Status.ON
 								pc.reader=reader
 								pc.writer=writer
+								aliveComputerAssociation=pc
+								r=dataInput.Read(0,powerInputBits)
+								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+								if powerInputBits.value()&pc.powerBitMask==0:
+									wlog.error('Error: Computer '+pc.name+' established connection '
+									           'while no power signal is detected. Check your wiring.')
 							else:
 								pass # send stop command here
 						finally:
@@ -489,14 +533,29 @@ async def serverConnectionHandler(reader,writer):
 				else:
 					wlog.error('Unknown computer message data: '+str(data))
 
+	except ConnectionResetError as e:
+
+		# remove sending log over network (connection was reset)
+		if wlog:
+			wlog.removeHandler(wlogHandler)
+			wlogHandler=None
+
+		# log connection reset
+		if aliveComputerAssociation:
+			wlog.info('Computer '+aliveComputerAssociation.name+' connection reset.')
+		else:
+			wlog.info('Connection reset.')
+
+	# all remaining "standard" exceptions
 	except Exception as e:
 		wlog.critical('\nException raised: '+type(e).__name__+'\n'+
 		              traceback.format_exc())
+
 	finally:
 		# close connection
 		# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
 		wlog.debug('Connection handler cleaning up...')
-		if wlog!=shutdownLog and wlog:
+		if wlog!=shutdownLog and wlog and wlogHandler!=None:
 			wlog.removeHandler(wlogHandler)
 		if wlog!=shutdownLog or wlog==None:
 			writer.close()

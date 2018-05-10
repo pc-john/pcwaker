@@ -143,7 +143,7 @@ def connectionHandler():
 
 					# print info messages
 					elif msgType==MSG_LOG:
-						print('Server info: '+str(message),end='')
+						print('Server info: '+str(message))
 						continue
 
 					else:
@@ -152,15 +152,19 @@ def connectionHandler():
 
 			finally:
 				# close connection
-				writer.drain()
 				writer.close()
+
+		except ConnectionResetError as e:
+			# log connection reset
+			print('Connection reset. Trying to reconnect...')
 
 		except (SystemExit,Exception) as e:
 			# exit called or Exception raised
 			print('Connection closed.')
 			raise e
+
 		else:
-			# connection lost or closed -> try to reconnect
+			# connection closed -> try to reconnect
 			print('Connection closed. Trying to reconnect...')
 
 
