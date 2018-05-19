@@ -12,6 +12,9 @@ MSG_EOF=0          # opposite side closed the stream and will only receive until
 MSG_LOG=1          # log messages that could be printed on the screen for the user or ignored
 MSG_USER=2         # messages exchanged between pcwaker.py (user interacting utility) and pcwakerd.py (daemon)
 MSG_COMPUTER=3     # messages exchanged bettwen pcwaker_client.py (client computer) and pcwakerd.py (daemon)
+MSG_PING_SCHEDULE=4  # message used for connection ping
+MSG_PING_REQUEST=5   # message used for connection ping
+MSG_PING_ANSWER=6    # message used for connection ping
 
 
 def stream_write_message(writer,msgType,message):

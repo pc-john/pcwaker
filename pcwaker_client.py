@@ -22,9 +22,15 @@ MSG_EOF=0          # opposite side closed the stream and will only receive until
 MSG_LOG=1          # log messages that could be printed on the screen for the user or ignored
 MSG_USER=2         # messages exchanged between pcwaker.py (user interacting utility) and pcwakerd.py (daemon)
 MSG_COMPUTER=3     # messages exchanged bettwen pcwaker_client.py (client computer) and pcwakerd.py (daemon)
+MSG_PING_SCHEDULE=4  # message used for connection ping
+MSG_PING_REQUEST=5   # message used for connection ping
+MSG_PING_ANSWER=6    # message used for connection ping
 
 
 terminatingSignalHandled=False
+reader=None
+timeOfLastPingRequest=0
+timeOfLastPingAnswer=0
 
 
 @asyncio.coroutine
@@ -32,6 +38,9 @@ def connectionHandler():
 
 	# repeat connection attempts whenever connection gets broken
 	exitRequested=False
+	global reader
+	global timeOfLastPingRequest
+	global timeOfLastPingAnswer
 	while not exitRequested:
 
 		# open connection
@@ -50,6 +59,11 @@ def connectionHandler():
 				hostName=socket.gethostname()
 				print('Sending \"Got alive\" message (this computer name: '+hostName+').')
 				stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['Got alive',hostName],protocol=2))
+
+				# send the first ping request
+				timeOfLastPingRequest=time.monotonic()
+				timeOfLastPingAnswer=0
+				stream_write_message(writer,MSG_PING_REQUEST,timeOfLastPingRequest)
 
 				# message loop
 				while True:
@@ -75,6 +89,25 @@ def connectionHandler():
 					if msgType==MSG_EOF:
 						print('Server closed the connection.')
 						break
+
+					# pingHandler scheduled sending of ping
+					elif msgType==MSG_PING_SCHEDULE:
+						if timeOfLastPingRequest!=timeOfLastPingAnswer:
+							print('Connection lost (ping timeout).')
+							break # close connection
+						timeOfLastPingRequest=message
+						stream_write_message(writer,MSG_PING_REQUEST,message)
+						continue
+
+					# peer sent ping request
+					elif msgType==MSG_PING_REQUEST:
+						stream_write_message(writer,MSG_PING_ANSWER,message)
+						continue
+
+					# peer sent ping answer
+					elif msgType==MSG_PING_ANSWER:
+						timeOfLastPingAnswer=message
+						continue
 
 					elif msgType==MSG_COMPUTER:
 
@@ -153,6 +186,9 @@ def connectionHandler():
 			finally:
 				# close connection
 				writer.close()
+				reader=None
+				timeOfLastPingRequest=0
+				timeOfLastPingAnswer=0
 
 		except ConnectionResetError as e:
 			# log connection reset
@@ -168,6 +204,28 @@ def connectionHandler():
 			print('Connection closed. Trying to reconnect...')
 
 
+@asyncio.coroutine
+def pingHandler():
+
+	while True:
+
+		# sleep 10s
+		yield from asyncio.sleep(10)
+
+		# do not do anything if no connection yet
+		if reader==None:
+			continue
+
+		# prepare data to send
+		data3=pickle.dumps(time.monotonic(),protocol=2)
+		data1=struct.pack('!I',MSG_PING_SCHEDULE)
+		data2=struct.pack('!I',len(data3))
+		data=data1+data2+data3
+
+		# feed data to readers
+		reader.feed_data(data)
+
+
 # taken from pcwaker_common.py:
 def stream_write_message(writer,msgType,message):
 	data=pickle.dumps(message,protocol=2)
@@ -179,7 +237,8 @@ def stream_write_message(writer,msgType,message):
 def signalCallback(text):
 	# print message and cancel connectionHandler task
 	print(text)
-	task.cancel()
+	connectionTask.cancel()
+	pingTask.cancel()
 
 
 def signalHandler(signum,stackframe):
@@ -234,7 +293,10 @@ def consoleCtrlHandler(signum,func=None):
 # initialization
 loop=asyncio.get_event_loop()
 try:
-	task=loop.create_task(connectionHandler())
+
+	# create tasks
+	connectionTask=loop.create_task(connectionHandler())
+	pingTask=loop.create_task(pingHandler())
 
 	# signal handlers
 	signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
@@ -251,7 +313,7 @@ try:
 
 	# main loop
 	print('Starting pcwaker client daemon. Use Ctrl-C to stop the daemon.')
-	loop.run_until_complete(task)
+	loop.run_until_complete(connectionTask)
 
 except asyncio.CancelledError:
 	pass # just catch and ignore the exception

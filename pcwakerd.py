@@ -5,7 +5,6 @@
 #
 #    Starts the process as the normal application.
 #
-
 #
 # pcwaker daemon [start|stop|restart]
 #
@@ -138,14 +137,18 @@ from pcconfig import *
 terminatingSignalHandled=False
 restartFlag=False
 shutdownLog=None
+pingTask=None
 
-# variables requiring deviceLock for safe access
+
+# variables requiring atomic access
 # (this includes all access to USB-4761 device,
 # all access to mutable computer data in computerList
-# and getComputerStatus() function)
-deviceLock=asyncio.Lock()
+# and getComputerStatus() function;
+# be careful when using await or yield
+# to leave data for others in consistent state)
 powerInputBits=None
 powerOutputBits=0
+connectionReaderList=[]
 
 # constants
 class Status:
@@ -223,7 +226,7 @@ async def serverConnectionHandler(reader,writer):
 
 	global powerOutputBits
 	wlog=None
-	aliveComputerAssociation=None
+	associatedComputer=None
 	try:
 
 		# initialize log
@@ -243,22 +246,66 @@ async def serverConnectionHandler(reader,writer):
 
 			# handle closed connection
 			if msgType==MSG_EOF:
-				if aliveComputerAssociation:
+				if associatedComputer:
 
-					# do not close writer, this will be made on this function exit
-					pc=aliveComputerAssociation
-					await deviceLock.acquire()
-					try:
-						aliveComputerAssociation.writer=None
-						aliveComputerAssociation.reader=None
-						r=dataInput.Read(0,powerInputBits)
-						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-						getComputerStatus(aliveComputerAssociation,powerInputBits.value())
-						aliveComputerAssociation=None
-					finally:
-						deviceLock.release()
+					# atomically change computer status
+					# (do not put any await and yield calls in this block!)
+					# (do not close writer, this will be made on the function exit)
+					pc=associatedComputer
+					associatedComputer.writer=None
+					associatedComputer.reader=None
+					associatedComputer=None
+					connectionReaderList.remove(reader)
+					r=dataInput.Read(0,powerInputBits)
+					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+					getComputerStatus(pc,powerInputBits.value())
+
 					wlog.info('Computer '+pc.name+' disconnected.')
 				break
+
+			# pingHandler scheduled sending of ping
+			# (atomically perform the following ping-schedule code block,
+			# no await and yield inside that might break computer data consistency!)
+			elif msgType==MSG_PING_SCHEDULE:
+
+				# only ON computers are processed
+				if associatedComputer.status!=Status.ON:
+					continue
+
+				# check if previous ping was correctly processed,
+				# if not, move to FROZEN state and check power (to move to OFF state)
+				if associatedComputer.timeOfLastPingAnswer!=associatedComputer.timeOfLastPingRequest:
+
+					# atomically finish the connection and put computer to FROZEN state
+					# (do not put any await and yield calls in this block!)
+					# (do not close writer, this will be made on the function exit)
+					pc=associatedComputer
+					associatedComputer.status=Status.FROZEN
+					associatedComputer.writer=None
+					associatedComputer.reader=None
+					associatedComputer=None
+					connectionReaderList.remove(reader)
+					r=dataInput.Read(0,powerInputBits)
+					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+					getComputerStatus(pc,powerInputBits.value())
+
+					# log and exit the loop
+					wlog.critical('Computer '+pc.name+' connection lost (ping timeout).')
+					break
+
+				associatedComputer.timeOfLastPingRequest=message
+				stream_write_message(writer,MSG_PING_REQUEST,message)
+				continue
+
+			# peer sent ping request
+			elif msgType==MSG_PING_REQUEST:
+				stream_write_message(writer,MSG_PING_ANSWER,message)
+				continue
+
+			# peer sent ping answer
+			elif msgType==MSG_PING_ANSWER:
+				associatedComputer.timeOfLastPingAnswer=message
+				continue
 
 			# process messages from pcwaker.py
 			elif msgType==MSG_USER:
@@ -314,23 +361,20 @@ async def serverConnectionHandler(reader,writer):
 							else:
 								list.append(pc)
 
-					# print result
-					await deviceLock.acquire()
-					try:
-						# read computer state
-						r=dataInput.Read(0,powerInputBits)
-						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-						if machineReadable:
-							for pc in list:
-								s=Status.str(getComputerStatus(pc,powerInputBits.value()))
-								stream_write_message(writer,MSG_USER,pickle.dumps(s,protocol=2))
-						else:
-							for pc in list:
-								s=Status.str(getComputerStatus(pc,powerInputBits.value()))
-								wlog.critical('Computer '+pc.name+':')
-								wlog.critical('   Status: '+s)
-					finally:
-						deviceLock.release()
+					# atomically read computer state and print result
+					# (do not put any await and yield calls in this block!)
+					r=dataInput.Read(0,powerInputBits)
+					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+					if machineReadable:
+						for pc in list:
+							s=Status.str(getComputerStatus(pc,powerInputBits.value()))
+							stream_write_message(writer,MSG_USER,pickle.dumps(s,protocol=2))
+					else:
+						for pc in list:
+							s=Status.str(getComputerStatus(pc,powerInputBits.value()))
+							wlog.critical('Computer '+pc.name+':')
+							wlog.critical('   Status: '+s)
+
 					continue
 
 				# start computer
@@ -345,82 +389,80 @@ async def serverConnectionHandler(reader,writer):
 							wlog.critical(params[1]+' is not a configured computer.')
 							continue
 
-						await deviceLock.acquire()
-						status=None
-						try:
-							# read computer state
+						# atomically process computer state update
+						# (do not put any await or yield calls the following blocks starting from
+						# read computer state, through processing all states and finishing by unknown state)
+
+						# read computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						status=getComputerStatus(pc,powerInputBits.value())
+
+						# if OFF, activate power signal
+						# (the rest will be performed bellow after 0.5s)
+						if status==Status.OFF:
+							wlog.info('Starting computer '+pc.name+'...')
+							powerOutputBits|=pc.powerBitMask
+							dataOutput.Write(0,powerOutputBits)
+
+						# in STARTING, do noting
+						elif status==Status.STARTING:
+							wlog.info('Computer '+pc.name+' is already starting.')
+
+						# in ON, do nothing
+						elif status==Status.ON:
+							wlog.info('Computer '+pc.name+' is already running.')
+
+						# in STOPPING, move to START_AFTER_STOPPED
+						elif status==Status.STOPPING:
+							wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
+							pc.status=Status.START_AFTER_STOPPED
+							# activate periodical state checker here
+
+						# in START_AFTER_STOPPED, do nothing
+						elif status==Status.START_AFTER_STOPPED:
+							wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
+
+						# in STOP_AFTER_STARTED, move to STARTING
+						elif status==Status.STOP_AFTER_STARTED:
+							wlog.info('Computer '+pc.name+' is scheduled to shutdown. Canceling shutdown.')
+							pc.status=Status.STARTING
+							# deactivate periodical state checker here
+
+						# in FROZEN, do nothing
+						elif status==Status.FROZEN:
+							wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
+											'   You might try to power it down by kill command or wait some moments\n'
+											'   (it might be busy installing updates during shutdown, power up, etc).')
+
+						# unknown state
+						else:
+							wlog.critical('Computer '+pc.name+' is in unknown state.')
+
+						# if status was originally OFF, deactivate power signal after 0.5s and re-read computer state
+						if status==Status.OFF:
+							await asyncio.sleep(0.5)
+
+							# atomically deactivate power signal and update computer state
+							# (do not put any await or yield calls in following two code blocks!)
+
+							# if OFF, deactivate power signal after 0.5s
+							powerOutputBits&=~pc.powerBitMask
+							dataOutput.Write(0,powerOutputBits)
+
+							# update computer state
 							r=dataInput.Read(0,powerInputBits)
 							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
 							status=getComputerStatus(pc,powerInputBits.value())
 
-							# if OFF, activate power signal
-							# (the rest will be performed bellow after 0.5s)
-							if status==Status.OFF:
-								wlog.info('Starting computer '+pc.name+'...')
-								powerOutputBits|=pc.powerBitMask
-								dataOutput.Write(0,powerOutputBits)
-
-							# in STARTING, do noting
-							elif status==Status.STARTING:
-								wlog.info('Computer '+pc.name+' is already starting.')
-
-							# in ON, do nothing
-							elif status==Status.ON:
-								wlog.info('Computer '+pc.name+' is already running.')
-
-							# in STOPPING, move to START_AFTER_STOPPED
-							elif status==Status.STOPPING:
-								wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
-								pc.status=Status.START_AFTER_STOPPED
-								# activate periodical state checker here
-
-							# in START_AFTER_STOPPED, do nothing
-							elif status==Status.START_AFTER_STOPPED:
-								wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
-
-							# in STOP_AFTER_STARTED, move to STARTING
-							elif status==Status.STOP_AFTER_STARTED:
-								wlog.info('Computer '+pc.name+' is scheduled to shutdown. Canceling shutdown.')
-								pc.status=Status.STARTING
-								# deactivate periodical state checker here
-
-							# in FROZEN, do nothing
-							elif status==Status.FROZEN:
-								wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
-								          '   You might try to power it down by kill command or wait some moments\n'
-								          '   (it might be busy installing updates during shutdown, power up, etc).')
-
-							# unknown state
-							else:
-								wlog.critical('Computer '+pc.name+' is in unknown state.')
-
-						finally:
-							deviceLock.release()
-
-						# if status was originally OFF, deactivate power signal after 0.5s and re-read computer state
-						if status==Status.OFF:
-							time.sleep(0.5)
-							await deviceLock.acquire()
-							try:
-
-								# if OFF, deactivate power signal after 0.5s
-								powerOutputBits&=~pc.powerBitMask
-								dataOutput.Write(0,powerOutputBits)
-
-								# read power state
-								r=dataInput.Read(0,powerInputBits)
-								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-								status=getComputerStatus(pc,powerInputBits.value())
-
-							finally:
-								deviceLock.release()
-
+							# log
 							if status==Status.OFF:
 								wlog.critical('Failed to start computer '+pc.name+'.')
 							elif status==Status.STARTING:
 								wlog.critical('Computer '+pc.name+' successfully started.')
 							else:
 								wlog.critical('Computer '+pc.name+' successfully started (state: '+Status.str(status)+').')
+
 					continue
 
 				# stop computer
@@ -435,54 +477,111 @@ async def serverConnectionHandler(reader,writer):
 							wlog.critical(params[1]+' is not a configured computer.')
 							continue
 
-						await deviceLock.acquire()
-						try:
-							# read computer state
+						# atomically update computer state
+						# (do not put any wait and yield calls in following code blocks starting from
+						# read computer state, through all state processing, finishing by unknown state)
+
+						# read computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						status=getComputerStatus(pc,powerInputBits.value())
+
+						# if OFF, do nothing
+						if status==Status.OFF:
+							wlog.info('Computer '+pc.name+' is already powered off.')
+
+						# in STARTING, move to STOP_AFTER_STARTED
+						elif status==Status.STARTING:
+							wlog.info('Computer '+pc.name+' is starting. It will be stopped after booting up.')
+							pc.status=Status.STOP_AFTER_STARTED
+
+						# in ON, send shutdown message and move to STOPPING
+						elif status==Status.ON:
+							wlog.info('Stopping computer '+pc.name+'...')
+							stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
+							pc.status=Status.STOPPING
+
+						# in STOPPING, do noting
+						elif status==Status.STOPPING:
+							wlog.info('Computer '+pc.name+' is already shutting down.')
+
+						# in START_AFTER_STOPPED, move to STOPPING
+						elif status==Status.START_AFTER_STOPPED:
+							wlog.info('Computer '+pc.name+' is scheduled to start after shutdown. Cancelling start.')
+							pc.status=Status.STOPPING
+							# deactivate periodical state checker here
+
+						# in STOP_AFTER_STARTED, do noting
+						elif status==Status.STOP_AFTER_STARTED:
+							wlog.info('Computer '+pc.name+' is already scheduled to shutdown.')
+
+						# in FROZEN, do nothing
+						elif status==Status.FROZEN:
+							wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
+											'   You might try to power it down by kill command or wait some moments\n'
+											'   (it might be busy installing updates during shutdown, power up, etc).')
+
+						# unknown state
+						else:
+							wlog.critical('Computer '+pc.name+' is in unknown state.')
+
+					continue
+
+				# kill computer - press power button for 4 seconds
+				elif params[0]=='kill':
+					if len(params)==1:
+						wlog.error('Error: No computer specified.')
+					else:
+
+						# get computer
+						pc=getComputer(params[1])
+						if pc==None:
+							wlog.critical(params[1]+' is not a configured computer.')
+							continue
+
+						# read computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						status=getComputerStatus(pc,powerInputBits.value())
+
+						# if OFF, do nothing
+						if status==Status.OFF:
+							wlog.info('Computer '+pc.name+' is already switched off.')
+							continue
+
+						# activate power signal
+						wlog.info('Forcefully shutting down computer '+pc.name+'...')
+						powerOutputBits|=pc.powerBitMask
+						dataOutput.Write(0,powerOutputBits)
+
+						t=0
+						while t<5.9: # max 6 seconds before we fail
+							await asyncio.sleep(0.5)
+							t+=0.5
+
+							# update computer state
 							r=dataInput.Read(0,powerInputBits)
 							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
 							status=getComputerStatus(pc,powerInputBits.value())
-
-							# if OFF, do nothing
 							if status==Status.OFF:
-								wlog.info('Computer '+pc.name+' is already powered off.')
+								break
 
-							# in STARTING, move to STOP_AFTER_STARTED
-							elif status==Status.STARTING:
-								wlog.info('Computer '+pc.name+' is starting. It will be stopped after booting up.')
-								pc.status=Status.STOP_AFTER_STARTED
+						# deactivate power signal
+						powerOutputBits&=~pc.powerBitMask
+						dataOutput.Write(0,powerOutputBits)
 
-							# in ON, send shutdown message and move to STOPPING
-							elif status==Status.ON:
-								wlog.info('Stopping computer '+pc.name+'...')
-								stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
-								pc.status=Status.STOPPING
+						# update computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						status=getComputerStatus(pc,powerInputBits.value())
 
-							# in STOPPING, do noting
-							elif status==Status.STOPPING:
-								wlog.info('Computer '+pc.name+' is already shutting down.')
+						# if OFF
+						if status==Status.OFF:
+							wlog.critical('Computer '+pc.name+' successfully powered off (in {:.1f} seconds).'.format(t))
+						else:
+							wlog.critical('Failed to forcefully power off computer '+pc.name+'.\n'
+							              '   Computer left in the state: '+Status.str(status)+'.')
 
-							# in START_AFTER_STOPPED, move to STOPPING
-							elif status==Status.START_AFTER_STOPPED:
-								wlog.info('Computer '+pc.name+' is scheduled to start after shutdown. Cancelling start.')
-								pc.status=Status.STOPPING
-								# deactivate periodical state checker here
-
-							# in STOP_AFTER_STARTED, do noting
-							elif status==Status.STOP_AFTER_STARTED:
-								wlog.info('Computer '+pc.name+' is already scheduled to shutdown.')
-
-							# in FROZEN, do nothing
-							elif status==Status.FROZEN:
-								wlog.info('Computer '+pc.name+' is not answering and seems to be frozen.\n'
-								          '   You might try to power it down by kill command or wait some moments\n'
-								          '   (it might be busy installing updates during shutdown, power up, etc).')
-
-							# unknown state
-							else:
-								wlog.critical('Computer '+pc.name+' is in unknown state.')
-
-						finally:
-							deviceLock.release()
 					continue
 
 				# unknown command
@@ -507,33 +606,37 @@ async def serverConnectionHandler(reader,writer):
 					else: computerName=None
 					pc=getComputer(computerName)
 					if pc!=None:
-						await deviceLock.acquire()
-						try:
-							if pc.status!=Status.STOP_AFTER_STARTED:
-								# move to ON status
-								pc.status=Status.ON
-								pc.reader=reader
-								pc.writer=writer
-								aliveComputerAssociation=pc
-								r=dataInput.Read(0,powerInputBits)
-								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-								if powerInputBits.value()&pc.powerBitMask==0:
-									wlog.error('Error: Computer '+pc.name+' established connection '
-									           'while no power signal is detected. Check your wiring.')
-							else:
-								pass # send stop command here
-						finally:
-							deviceLock.release()
+						if pc.status!=Status.STOP_AFTER_STARTED:
+
+							# move to ON status
+							# (atomically process the following code block, not doing any await or yield calls!)
+							pc.status=Status.ON
+							pc.reader=reader
+							pc.writer=writer
+							associatedComputer=pc
+							connectionReaderList.append(reader)
+							pc.timeOfLastPingRequest=time.monotonic()
+							pc.timeOfLastPingAnswer=pc.timeOfLastPingRequest
+							r=dataInput.Read(0,powerInputBits)
+							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+							if powerInputBits.value()&pc.powerBitMask==0:
+								wlog.error('Error: Computer '+pc.name+' established connection\n'
+								           '   while no power signal is detected. Check your wiring.')
+
+						else:
+							pass # send stop command here
+
 						log.critical('Computer '+pc.name+' got alive')
 					else:
-						log.critical('Computer '+params[1]+' attempt to announce it is alive, but it is not a registered computer.')
+						log.critical('Computer '+params[1]+' attempts to announce it is alive,\n'
+						             '   but it is not a registered computer.')
 						break
 
 				# unknown message
 				else:
 					wlog.error('Unknown computer message data: '+str(data))
 
-	except ConnectionResetError as e:
+	except (ConnectionResetError,BrokenPipeError) as e:
 
 		# remove sending log over network (connection was reset)
 		if wlog:
@@ -541,10 +644,18 @@ async def serverConnectionHandler(reader,writer):
 			wlogHandler=None
 
 		# log connection reset
-		if aliveComputerAssociation:
-			wlog.info('Computer '+aliveComputerAssociation.name+' connection reset.')
+		if associatedComputer:
+			if type(e)==ConnectionResetError:
+				t='Computer '+associatedComputer.name+' connection reset.'
+			elif type(e)==BrokenPipeError:
+				t='Computer '+associatedComputer.name+' broken pipe.'
+			else:
+				t='Computer '+associatedComputer.name+' unhandled error.'
 		else:
-			wlog.info('Connection reset.')
+			if type(e)==ConnectionResetError: t='Connection reset.'
+			elif type(e)==BrokenPipeError: t='Broken pipe.'
+			else: t='Unhandled error.'
+		wlog.info(t)
 
 	# all remaining "standard" exceptions
 	except Exception as e:
@@ -552,6 +663,12 @@ async def serverConnectionHandler(reader,writer):
 		              traceback.format_exc())
 
 	finally:
+
+		# remove connection from connection list
+		# (no await and yield calls in this code block!)
+		if reader in connectionReaderList:
+			connectionReaderList.remove(reader)
+
 		# close connection
 		# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
 		wlog.debug('Connection handler cleaning up...')
@@ -560,6 +677,25 @@ async def serverConnectionHandler(reader,writer):
 		if wlog!=shutdownLog or wlog==None:
 			writer.close()
 		wlog.debug('Connection handler terminated.')
+
+
+async def pingHandler():
+
+	while True:
+
+		# sleep 10s
+		await asyncio.sleep(10)
+
+		# prepare data to send
+		data3=pickle.dumps(time.monotonic(),protocol=2)
+		data1=struct.pack('!I',MSG_PING_SCHEDULE)
+		data2=struct.pack('!I',len(data3))
+		data=data1+data2+data3
+
+		# feed data to the readers
+		# (do not use any await or yield calls in this code block!)
+		for r in connectionReaderList:
+			r.feed_data(data)
 
 
 def getComputer(name):
@@ -853,6 +989,9 @@ if args.init_print_log:
 	os.close(sys.stdout.fileno())
 if args.signal_start_to_parent:
 	os.kill(os.getppid(),signal.SIGHUP)
+
+# create ping task
+pingTask=loop.create_task(pingHandler())
 
 # run main loop
 try:
