@@ -207,23 +207,27 @@ def connectionHandler():
 @asyncio.coroutine
 def pingHandler():
 
-	while True:
+	try:
+		while True:
 
-		# sleep 10s
-		yield from asyncio.sleep(10)
+			# sleep 10s
+			yield from asyncio.sleep(10)
 
-		# do not do anything if no connection yet
-		if reader==None:
-			continue
+			# do not do anything if no connection yet
+			if reader==None:
+				continue
 
-		# prepare data to send
-		data3=pickle.dumps(time.monotonic(),protocol=2)
-		data1=struct.pack('!I',MSG_PING_SCHEDULE)
-		data2=struct.pack('!I',len(data3))
-		data=data1+data2+data3
+			# prepare data to send
+			data3=pickle.dumps(time.monotonic(),protocol=2)
+			data1=struct.pack('!I',MSG_PING_SCHEDULE)
+			data2=struct.pack('!I',len(data3))
+			data=data1+data2+data3
 
-		# feed data to readers
-		reader.feed_data(data)
+			# feed data to readers
+			reader.feed_data(data)
+
+	except asyncio.CancelledError:
+		pass
 
 
 # taken from pcwaker_common.py:
@@ -292,11 +296,9 @@ def consoleCtrlHandler(signum,func=None):
 
 # initialization
 loop=asyncio.get_event_loop()
+connectionTask=loop.create_task(connectionHandler())
+pingTask=loop.create_task(pingHandler())
 try:
-
-	# create tasks
-	connectionTask=loop.create_task(connectionHandler())
-	pingTask=loop.create_task(pingHandler())
 
 	# signal handlers
 	signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
@@ -319,6 +321,8 @@ except asyncio.CancelledError:
 	pass # just catch and ignore the exception
 finally:
 	print("Cleaning up...")
+	pingTask.cancel()
+	loop.run_until_complete(pingTask)
 	loop.close()
 
 print('Terminating pcwaker client daemon successfully.')
