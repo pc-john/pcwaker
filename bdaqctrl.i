@@ -10,8 +10,8 @@
 
 %{
 /* Includes the header in the wrapper code */
-#include "USB-4761-amd64/inc/bdaqctrl.h"
+#include "build/inc/bdaqctrl.h"
 %}
 
 /* Parse the header file to generate wrappers */
-%include "USB-4761-amd64/inc/bdaqctrl.h"
+%include "build/inc/bdaqctrl.h"

@@ -5,7 +5,7 @@ import struct
 
 # file paths of server process
 listeningPortFilePath=''
-logFilePath='/data/RaspberryPi/pcwaker/pcwakerd.log'
+logFilePath='/var/log/pcwaker/pcwakerd.log'
 
 # message ids used for stream message content identification
 MSG_EOF=0          # opposite side closed the stream and will only receive until we sent EOF as well

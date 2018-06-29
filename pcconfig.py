@@ -5,15 +5,15 @@ pcwakerListeningPort=9988
 pcwakerServerAddress=('cadwork-pi.fit.vutbr.cz',pcwakerListeningPort)
 
 # computers
-class pcCore2:
-	name='Core2'
-	names=[name]
-	powerBitMask=0x40
-
 class pcP4:
 	name='P4'
 	names=[name]
-	powerBitMask=0x80
+	powerBitMask=0x01
+
+class pcCore2:
+	name='Core2'
+	names=[name]
+	powerBitMask=0x02
 
 computerList=[pcP4,pcCore2]
 
