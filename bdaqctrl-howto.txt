@@ -1,7 +1,7 @@
 To generate python wrapper for bdaqctrl (written in c++) use following steps:
 
 1. process bdaqctrl.h by swig to produce cpp and python wrapper (bdaqctrl_wrap.cpp and bdaqctrl.py)
-   (update bdaqctrl to point to the place that you placed bdaqctrl.h)
+   (update bdaqctrl.i to point to the place that you placed bdaqctrl.h)
 swig -python -c++ -o bdaqctrl_wrap.cpp bdaqctrl.i
 
 2. compile c++ wrapper
@@ -14,3 +14,5 @@ ld -shared bdaqctrl_wrap.o -LUSB-4761-amd64/libs/ -lbiodaq -o _bdaqctrl.so
    (libbiodaq.so might need to be put in /usr/local/lib or LD_LIBRARY_PATH might need to be set)
 python3
 import bdaqctrl
+
+Do not forget to put libbio4761.so and libbiodaq.so to /usr/local/lib and to run sudo ldconfig.
