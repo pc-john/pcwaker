@@ -9,11 +9,14 @@ import sys
 from pcwaker_common import *
 from pcconfig import pcwakerListeningPort
 
+debug=False
+
 
 async def clientConnectionHandler(message):
 
 	# open connection
-	print('Connecting to port '+str(port)+'...')
+	if debug:
+		print('Connecting to port '+str(port)+'...')
 	try:
 		reader,writer=await asyncio.open_connection('127.0.0.1',port,loop=loop)
 	except ConnectionRefusedError as e:
@@ -29,7 +32,8 @@ async def clientConnectionHandler(message):
 		exit(1)
 
 	# send message
-	print('Sending message '+str(message)+'.')
+	if debug:
+		print('Sending message '+str(message)+'.')
 	stream_write_message(writer,MSG_USER,message)
 	writer.write_eof()
 
@@ -40,7 +44,8 @@ async def clientConnectionHandler(message):
 			break
 		print(str(message))
 
-	print('Closing the connection.')
+	if debug:
+		print('Closing the connection.')
 	writer.close()
 
 

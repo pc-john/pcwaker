@@ -145,7 +145,7 @@ def connectionHandler():
 
 									# print return code
 									if p.returncode==0:
-										print('Command '+str(params[1:])+' succeed',end='')
+										print('Command '+str(params[1:])+' succeeded',end='')
 									else:
 										print('Command '+str(params[1:])+' returned error code '+str(p.returncode),end='')
 

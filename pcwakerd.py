@@ -584,6 +584,33 @@ async def serverConnectionHandler(reader,writer):
 
 					continue
 
+				# execute command on computer
+				elif params[0]=='command':
+					if len(params)==1:
+						wlog.error('Error: No computer specified.')
+					else:
+
+						# get computer
+						pc=getComputer(params[1])
+						if pc==None:
+							wlog.critical(params[1]+' is not a configured computer.')
+							continue
+
+						# read computer state
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						status=getComputerStatus(pc,powerInputBits.value())
+
+						# if not ON, print error
+						if status!=Status.ON:
+							wlog.info('Computer '+pc.name+' is not in ON state (current state: '+Status.str(status)+'.')
+							continue
+
+						# send the command
+						stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['command']+params[2:],protocol=2))
+
+					continue
+
 				# unknown command
 				else:
 					wlog.error('Unknown command: '+params[0])
