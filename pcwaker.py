@@ -52,7 +52,10 @@ async def clientConnectionHandler(message):
 # -h and --help or no arguments
 if len(sys.argv)<=1 or '-h' in sys.argv or '--help' in sys.argv:
    print('\n'
-         'pcwaker - utility for starting and stopping computers using GPIO\n'
+         'pcwaker - utility for switching computers on, monitoring them, remotely\n'
+         '          executing commands on them, and safely shutting them down.\n'
+         '          It uses Advantech USB-4761 device connected to motherboard\n'
+         '          power switch pins and power LED pins.\n'
          '\n'
          'Usage:\n'
          '   -h, --help, no arguments\n'

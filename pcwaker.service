@@ -1,13 +1,13 @@
 [Unit]
-Description=pcwaker - service for starting and stopping of computers using GPIO
+Description=pcwaker - service for starting and stopping of computers
 After=network.target syslog.target
 
 [Service]
 Type=forking
 User=pi
 Group=pi
-ExecStart=/buildbot-master/pcwaker.py daemon start
-ExecStop =/buildbot-master/pcwaker.py daemon stop
+ExecStart=/pcwaker/pcwaker.py daemon start
+ExecStop =/pcwaker/pcwaker.py daemon stop
 
 [Install]
 WantedBy=multi-user.target

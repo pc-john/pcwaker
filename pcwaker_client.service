@@ -1,0 +1,15 @@
+[Unit]
+Description=pcwaker_client - service for starting and stopping of computers
+After=network.target syslog.target
+
+[Service]
+Type=simple
+User=papoadmin
+Group=papoadmin
+ExecStartPre=/usr/bin/smbclient //cadwork-pi/pcwaker --no-pass --command="get pcwaker_client.py /var/lib/pcwaker/pcwaker_client.py"
+ExecStartPre=/usr/bin/smbclient //cadwork-pi/pcwaker --no-pass --command="get pcconfig.py /var/lib/pcwaker/pcconfig.py"
+ExecStart=/usr/bin/python3 /var/lib/pcwaker/pcwaker_client.py
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
