@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.4
+#!/usr/bin/env python3
 
 # we might consider to run this file as a windows service on the target computer:
 # http://stackoverflow.com/questions/32404/is-it-possible-to-run-a-python-script-as-a-service-in-windows-if-possible-how
@@ -41,6 +41,7 @@ def connectionHandler():
 	global reader
 	global timeOfLastPingRequest
 	global timeOfLastPingAnswer
+	lastReconnectTime=time.monotonic()-20
 	while not exitRequested:
 
 		# open connection
@@ -50,7 +51,8 @@ def connectionHandler():
 		except (ConnectionRefusedError,OSError) as e:
 			print('Can not connect to '+pcwakerServerAddress[0]+':'+str(pcwakerServerAddress[1])+
 			      '. Will try again in 30 seconds...')
-			time.sleep(30)
+			for i in range(60):  # wait 30 seconds and allow interrupts (such as Ctrl-C) to be handled each 500ms
+				yield time.sleep(0.5)
 			continue
 
 		try:
@@ -203,6 +205,14 @@ def connectionHandler():
 			# connection closed -> try to reconnect
 			print('Connection closed. Trying to reconnect...')
 
+		# avoid too quick reconnects
+		if not exitRequested:
+			if time.monotonic()-lastReconnectTime<10:
+				print('Reconnecting in 30s...')
+				for i in range(60):  # wait 30 seconds and allow interrupts (such as Ctrl-C) to be handled each 500ms
+					yield time.sleep(0.5)
+			lastReconnectTime=time.monotonic()
+
 
 @asyncio.coroutine
 def pingHandler():
@@ -248,7 +258,10 @@ def signalCallback(text):
 def signalHandler(signum,stackframe):
 
 	# translate signum to text
-	sig2text={signal.SIGHUP:'HUP',signal.SIGTERM:'TERM',signal.SIGINT:'Ctrl-C'}
+	if os.name=='nt':
+		sig2text={signal.SIGTERM:'TERM',signal.SIGINT:'INT',signal.CTRL_C_EVENT:'Ctrl-C'}  # Windows signals
+	else:
+		sig2text={signal.SIGHUP:'HUP',signal.SIGTERM:'TERM',signal.SIGINT:'Ctrl-C'}  # Linux signals
 	if signum in sig2text:
 		sigName=sig2text[signum]
 	else:
