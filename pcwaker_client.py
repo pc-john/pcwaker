@@ -127,6 +127,8 @@ def connectionHandler():
 								subprocess.call(['shutdown','--shutdown','60'])
 							elif sys.platform.startswith('win32'):
 								subprocess.call(['shutdown','-s','-t','60'])
+							elif sys.platform.startswith('linux'):
+								subprocess.call(['/usr/bin/sudo','shutdown','--poweroff','+1','pcwaker scheduled shutdown in one minute. Use \"shutdown -c\" to cancel.'])
 							else:
 								print('Error: No shutdown code for this operating system.')
 							print('Done.')
@@ -312,6 +314,9 @@ loop=asyncio.get_event_loop()
 connectionTask=loop.create_task(connectionHandler())
 pingTask=loop.create_task(pingHandler())
 try:
+	# set line buffering for stdout
+	# (otherwise text is buffered for long time and appears only after flush)
+	sys.stdout=os.fdopen(sys.stdout.fileno(),'w',1)
 
 	# signal handlers
 	signal.signal(signal.SIGINT,signalHandler) # Ctrl-C handler
