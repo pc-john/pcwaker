@@ -1,14 +1,29 @@
+# pcwaker_client installation:
+# 1. put this file to /etc/systemd/system on the target computer
+#    (for instance by running sudo smbclient //cadwork-pi/pcwaker --no-pass --command="get pcwaker_client.service /etc/systemd/system/pcwaker_client.service")
+# 2. run sudo systemctl daemon-reload
+#    to reconfigure systemd services
+# 3. enable pcwaker_client.service
+#    by running sudo systemctl enable pcwaker_client.service
+# 4. avoid syslog warnings of samba by commenting out "syslog = 0" in /etc/samba/smb.conf
+#    (example of commented out line: "#   syslog = 0")
+# 5. create /var/lib/pcwaker folder and change its ownership to papoadmin
+#    for example run "sudo mkdir /var/lib/pcwaker" and "sudo chown papoadmin:papoadmin /var/lib/pcwaker"
+
 [Unit]
 Description=pcwaker_client - service for starting and stopping of computers
 After=network.target syslog.target
+Wants=network.target syslog.target
 
 [Service]
 Type=simple
 User=papoadmin
 Group=papoadmin
-ExecStartPre=/usr/bin/smbclient //cadwork-pi/pcwaker --no-pass --command="get pcwaker_client.py /var/lib/pcwaker/pcwaker_client.py"
-ExecStartPre=/usr/bin/smbclient //cadwork-pi/pcwaker --no-pass --command="get pcconfig.py /var/lib/pcwaker/pcconfig.py"
-ExecStart=/usr/bin/python3 /var/lib/pcwaker/pcwaker_client.py
+ExecStartPre=/bin/sh -c " { until ping -c1 147.229.13.176  >/dev/null 2>&1; do : sleep 1; done } "
+ExecStartPre=/usr/bin/smbclient //147.229.13.176/pcwaker --no-pass --command="get pcwaker_client.py /var/lib/pcwaker/pcwaker_client.py"
+ExecStartPre=/usr/bin/smbclient //147.229.13.176/pcwaker --no-pass --command="get pcconfig.py /var/lib/pcwaker/pcconfig.py"
+ExecStartPre=/bin/chmod 744 /var/lib/pcwaker/pcwaker_client.py
+ExecStart=/var/lib/pcwaker/pcwaker_client.py
 KillSignal=SIGTERM
 
 [Install]
