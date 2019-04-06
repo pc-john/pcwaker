@@ -8,17 +8,22 @@ pcwakerServerAddress=('cadwork-pi.fit.vutbr.cz',pcwakerListeningPort)
 class pcHaswell:
 	name='cadwork-i4'
 	names=[name,'i4','Haswell']
-	powerBitMask=0x08
+	powerBitMask=0x04
 
 class pcIvyBridge:
 	name='cadwork-i3'
 	names=[name,'i3','IvyBridge']
-	powerBitMask=0x04
+	powerBitMask=0x01
 
 class pcSandyBridge:
 	name='cadwork-i2'
 	names=[name,'i2','SandyBridge']
 	powerBitMask=0x10
+
+class pcWestmere:
+	name='cadwork-i1'
+	names=[name,'i1','Westmere']
+	powerBitMask=0x08
 
 class pcCore2:
 	name='cadwork-c2'
@@ -28,6 +33,6 @@ class pcCore2:
 class pcP4:
 	name='cadwork-p4'
 	names=[name,'p4','P4']
-	powerBitMask=0x01
+	powerBitMask=0x0 # not connected now
 
-computerList=[pcHaswell,pcIvyBridge,pcSandyBridge,pcCore2,pcP4]
+computerList=[pcHaswell,pcIvyBridge,pcSandyBridge,pcWestmere,pcCore2,pcP4]
