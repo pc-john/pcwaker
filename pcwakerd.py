@@ -148,7 +148,7 @@ pingTask=None
 # to leave data for others in consistent state)
 powerInputBits=None
 powerOutputBits=0
-connectionReaderList=[]
+activeComputerList=[]
 
 # constants
 class Status:
@@ -255,47 +255,13 @@ async def serverConnectionHandler(reader,writer):
 					associatedComputer.writer=None
 					associatedComputer.reader=None
 					associatedComputer=None
-					connectionReaderList.remove(reader)
+					activeComputerList.remove(pc)
 					r=dataInput.Read(0,powerInputBits)
 					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
 					getComputerStatus(pc,powerInputBits.value())
 
 					wlog.info('Computer '+pc.name+' disconnected.')
 				break
-
-			# pingHandler scheduled sending of ping
-			# (atomically perform the following ping-schedule code block,
-			# no await and yield inside that might break computer data consistency!)
-			elif msgType==MSG_PING_SCHEDULE:
-
-				# only ON computers are processed
-				if associatedComputer.status!=Status.ON:
-					continue
-
-				# check if previous ping was correctly processed,
-				# if not, move to FROZEN state and check power (to move to OFF state)
-				if associatedComputer.timeOfLastPingAnswer!=associatedComputer.timeOfLastPingRequest:
-
-					# atomically finish the connection and put computer to FROZEN state
-					# (do not put any await and yield calls in this block!)
-					# (do not close writer, this will be made on the function exit)
-					pc=associatedComputer
-					associatedComputer.status=Status.FROZEN
-					associatedComputer.writer=None
-					associatedComputer.reader=None
-					associatedComputer=None
-					connectionReaderList.remove(reader)
-					r=dataInput.Read(0,powerInputBits)
-					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-					getComputerStatus(pc,powerInputBits.value())
-
-					# log and exit the loop
-					wlog.critical('Computer '+pc.name+' connection lost (ping timeout).')
-					break
-
-				associatedComputer.timeOfLastPingRequest=message
-				stream_write_message(writer,MSG_PING_REQUEST,message)
-				continue
 
 			# peer sent ping request
 			elif msgType==MSG_PING_REQUEST:
@@ -641,7 +607,7 @@ async def serverConnectionHandler(reader,writer):
 							pc.reader=reader
 							pc.writer=writer
 							associatedComputer=pc
-							connectionReaderList.append(reader)
+							activeComputerList.append(pc)
 							pc.timeOfLastPingRequest=time.monotonic()
 							pc.timeOfLastPingAnswer=pc.timeOfLastPingRequest
 							r=dataInput.Read(0,powerInputBits)
@@ -693,8 +659,8 @@ async def serverConnectionHandler(reader,writer):
 
 		# remove connection from connection list
 		# (no await and yield calls in this code block!)
-		if reader in connectionReaderList:
-			connectionReaderList.remove(reader)
+		if reader in activeComputerList:
+			activeComputerList.remove(reader)
 
 		# close connection
 		# (shutdownLog is not closed, neither its writer; they will be closed when main loop is left)
@@ -714,15 +680,34 @@ async def pingHandler():
 		await asyncio.sleep(10)
 
 		# prepare data to send
-		data3=pickle.dumps(time.monotonic(),protocol=2)
-		data1=struct.pack('!I',MSG_PING_SCHEDULE)
-		data2=struct.pack('!I',len(data3))
-		data=data1+data2+data3
+		message=pickle.dumps(time.monotonic(),protocol=2)
 
-		# feed data to the readers
+		# pingHandler scheduled sending of ping
 		# (do not use any await or yield calls in this code block!)
-		for r in connectionReaderList:
-			r.feed_data(data)
+		for pc in activeComputerList:
+
+			# only ON computers are processed
+			if pc.status!=Status.ON:
+				continue
+
+			# check if previous ping was correctly processed,
+			# if not, move to FROZEN state and check power (to move to OFF state)
+			if pc.timeOfLastPingAnswer!=pc.timeOfLastPingRequest:
+
+				# close the connection and put computer to FROZEN state
+				# (do not put any await and yield calls in this block!)
+				pc.status=Status.FROZEN
+				pc.writer.close()
+				pc.reader.feed_eof()
+
+				# log connection lost
+				wlog.critical('Computer '+pc.name+' connection lost (ping timeout).')
+				continue
+
+			# send ping request
+			pc.timeOfLastPingRequest=message
+			#stream_write_message(writer,MSG_PING_REQUEST,message)
+			continue
 
 
 def getComputer(name):
@@ -859,8 +844,10 @@ def signalHandler(signum,stackframe):
 
 
 # init argument parser
-argParser=argparse.ArgumentParser(description='PCWaker daemon for switching computers on, monitoring '
-                                  'them, executing commands on them and safely shutting them down.')
+argParser=argparse.ArgumentParser(description='pcwaker daemon for switching computers on, monitoring '
+                                  'them, executing commands on them and safely shutting them down '
+                                  'using Advantech USB-4761 device connected to motherboard '
+                                  'power switch pins and power LED pins.')
 argParser.add_argument('--debug',help='Sets debug level to "debug". '
                                       'Much of internal information will be printed.',
                        action='store_true')
@@ -940,7 +927,7 @@ for pc in computerList:
 if computerListText=='': computerListText='none'
 if runningComputers=='': runningComputers='none'
 log.info('Initializing computers: '+computerListText)
-log.info('Currently powered on computers: '+runningComputers)
+log.info('Currently powered computers: '+runningComputers)
 del computerListText
 del runningComputers
 
