@@ -65,7 +65,7 @@ if len(sys.argv)<=1 or '-h' in sys.argv or '--help' in sys.argv:
          '      Optional --debug parameter causes debug messages to be printed.\n'
          '   status [computer-names]\n'
          '      Prints status of all computers. If computer name(s) are given,\n'
-         '      it prints only status of these computers.\n'
+         '      it prints only status of computers listed.\n'
          '   start [computer-name]\n'
          '      Starts computer given by computer-name.\n'
          '   stop [computer-name]\n'

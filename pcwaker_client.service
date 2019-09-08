@@ -9,6 +9,13 @@
 #    (example of commented out line: "#   syslog = 0")
 # 5. create /var/lib/pcwaker folder and change its ownership to papoadmin
 #    for example run "sudo mkdir /var/lib/pcwaker" and "sudo chown papoadmin:papoadmin /var/lib/pcwaker"
+# 6. make sudo efibootmgr, shutdown, halt, reboot and poweroff not ask for password. You can do it
+#    by installing power_control file in /etc/sudoers.d/ for instance by running
+#    sudo smbclient //cadwork-pi/pcwaker --no-pass --command="get power_control /etc/sudoers.d/power_control"
+# 7. check hostname of the computer; it must match the one in pcconfig.py
+#    If necessary, change it by sudo hostnamectl set-hostname <computerName>
+# 8. start the service by running
+#    sudo systemctl start pcwaker_client
 
 [Unit]
 Description=pcwaker_client - service for starting and stopping of computers
