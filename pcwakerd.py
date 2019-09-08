@@ -263,6 +263,30 @@ async def serverConnectionHandler(reader,writer):
 					wlog.info('Computer '+pc.name+' disconnected.')
 				break
 
+			# pingHandler scheduled sending of ping
+			if msgType==MSG_PING_SCHEDULE:
+
+				# check if previous ping was correctly processed,
+				# if not, move to FROZEN state and check power (to move to OFF state)
+				if pc.timeOfLastPingAnswer!=pc.timeOfLastPingRequest:
+
+					# close the connection and put computer to FROZEN state
+					# (do not put any await and yield calls in this block!)
+					pc.status=Status.FROZEN
+					pc.writer.close()
+					pc.reader.feed_eof()
+					r=dataInput.Read(0,powerInputBits)
+					if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+					getComputerStatus(pc,powerInputBits.value())
+
+					# log connection lost
+					log.error(pc.name+': connection lost (ping timeout).')
+					break
+
+				# send ping request message
+				pc.timeOfLastPingRequest=message
+				stream_write_message(writer,MSG_PING_REQUEST,message)
+
 			# peer sent ping request
 			elif msgType==MSG_PING_REQUEST:
 				stream_write_message(writer,MSG_PING_ANSWER,message)
@@ -337,9 +361,12 @@ async def serverConnectionHandler(reader,writer):
 							stream_write_message(writer,MSG_USER,pickle.dumps(s,protocol=2))
 					else:
 						for pc in list:
-							s=Status.str(getComputerStatus(pc,powerInputBits.value()))
+							status=getComputerStatus(pc,powerInputBits.value())
+							s=Status.str(status)
 							wlog.critical('Computer '+pc.name+':')
 							wlog.critical('   Status: '+s)
+							if status==Status.ON:
+								wlog.critical('   OS:     '+pc.currentOS.name)
 
 					continue
 
@@ -569,7 +596,7 @@ async def serverConnectionHandler(reader,writer):
 
 						# if not ON, print error
 						if status!=Status.ON:
-							wlog.info('Computer '+pc.name+' is not in ON state (current state: '+Status.str(status)+'.')
+							wlog.info('Computer '+pc.name+' is not in ON state (current state: '+Status.str(status)+').')
 							continue
 
 						# send the command
@@ -680,7 +707,10 @@ async def pingHandler():
 		await asyncio.sleep(10)
 
 		# prepare data to send
-		message=pickle.dumps(time.monotonic(),protocol=2)
+		data3=pickle.dumps(time.monotonic(),protocol=2)
+		data1=struct.pack('!I',MSG_PING_SCHEDULE)
+		data2=struct.pack('!I',len(data3))
+		message=data1+data2+data3
 
 		# pingHandler scheduled sending of ping
 		# (do not use any await or yield calls in this code block!)
@@ -690,23 +720,8 @@ async def pingHandler():
 			if pc.status!=Status.ON:
 				continue
 
-			# check if previous ping was correctly processed,
-			# if not, move to FROZEN state and check power (to move to OFF state)
-			if pc.timeOfLastPingAnswer!=pc.timeOfLastPingRequest:
-
-				# close the connection and put computer to FROZEN state
-				# (do not put any await and yield calls in this block!)
-				pc.status=Status.FROZEN
-				pc.writer.close()
-				pc.reader.feed_eof()
-
-				# log connection lost
-				wlog.critical('Computer '+pc.name+' connection lost (ping timeout).')
-				continue
-
-			# send ping request
-			pc.timeOfLastPingRequest=message
-			#stream_write_message(writer,MSG_PING_REQUEST,message)
+			# feed data to the reader
+			pc.reader.feed_data(message)
 			continue
 
 
