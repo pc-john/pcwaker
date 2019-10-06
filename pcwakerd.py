@@ -174,6 +174,11 @@ _status2string={
 	Status.STOP_AFTER_STARTED:  "STOP_AFTER_STARTED",
 }
 
+class NoRequestedOS:
+	name="None"
+
+noRequestedOS=NoRequestedOS
+
 
 
 def getComputerStatus(pc,powerInputBits):
@@ -189,6 +194,7 @@ def getComputerStatus(pc,powerInputBits):
 		# all remaining states: on power lost ->OFF
 		if powerInputBits&pc.powerBitMask==0:
 			pc.status=Status.OFF
+			pc.requestedOS=noRequestedOS
 
 	# status OFF
 	if pc.status==Status.OFF:
@@ -382,6 +388,16 @@ async def serverConnectionHandler(reader,writer):
 							wlog.critical(params[1]+' is not a configured computer.')
 							continue
 
+						# requested OS
+						if len(params)>=3:
+							pc.requestedOS=getComputerOperatingSystemByName(pc,params[2])
+							if pc.requestedOS==None and params[2]!=None and params!='':
+								wlog.critical(params[2]+' is not valid operating system for computer '+pc.name)
+							if pc.requestedOS==None:
+								pc.requestedOS=noRequestedOS
+						else:
+							pc.requestedOS=noRequestedOS
+
 						# atomically process computer state update
 						# (do not put any await or yield calls the following blocks starting from
 						# read computer state, through processing all states and finishing by unknown state)
@@ -432,14 +448,14 @@ async def serverConnectionHandler(reader,writer):
 						else:
 							wlog.critical('Computer '+pc.name+' is in unknown state.')
 
-						# if status was originally OFF, deactivate power signal after 0.5s and re-read computer state
+						# if status was originally OFF, deactivate power signal after 0.5 second and re-read computer state
 						if status==Status.OFF:
 							await asyncio.sleep(0.5)
 
 							# atomically deactivate power signal and update computer state
 							# (do not put any await or yield calls in following two code blocks!)
 
-							# if OFF, deactivate power signal after 0.5s
+							# if OFF, deactivate power signal after 0.5 second
 							powerOutputBits&=~pc.powerBitMask
 							dataOutput.Write(0,powerOutputBits)
 
@@ -447,6 +463,16 @@ async def serverConnectionHandler(reader,writer):
 							r=dataInput.Read(0,powerInputBits)
 							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
 							status=getComputerStatus(pc,powerInputBits.value())
+
+							# if still did not came up, give it three times another 0.5 second
+							for i in [1,2,3]:
+								if status==Status.OFF:
+									await asyncio.sleep(0.5)
+
+									# test again if it came up
+									r=dataInput.Read(0,powerInputBits)
+									if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+									status=getComputerStatus(pc,powerInputBits.value())
 
 							# log
 							if status==Status.OFF:
@@ -487,6 +513,7 @@ async def serverConnectionHandler(reader,writer):
 						elif status==Status.STARTING:
 							wlog.info('Computer '+pc.name+' is starting. It will be stopped after booting up.')
 							pc.status=Status.STOP_AFTER_STARTED
+							pc.requestedOS=noRequestedOS
 
 						# in ON, send shutdown message and move to STOPPING
 						elif status==Status.ON:
@@ -624,29 +651,67 @@ async def serverConnectionHandler(reader,writer):
 				if params[0]=='Got alive':
 					if len(params)>=2: computerName=params[1]
 					else: computerName=None
+					if len(params)>=3: platform=params[2]
+					else: platform=None
+					if len(params)>=4: partition=params[3]
+					else: partition=None
 					pc=getComputer(computerName)
 					if pc!=None:
+
+						log.info('Computer '+pc.name+' got alive (system: '+platform+', partition: '+partition+').')
+
 						if pc.status!=Status.STOP_AFTER_STARTED:
 
-							# move to ON status
-							# (atomically process the following code block, not doing any await or yield calls!)
-							pc.status=Status.ON
-							pc.reader=reader
-							pc.writer=writer
-							associatedComputer=pc
-							activeComputerList.append(pc)
-							pc.timeOfLastPingRequest=time.monotonic()
-							pc.timeOfLastPingAnswer=pc.timeOfLastPingRequest
-							r=dataInput.Read(0,powerInputBits)
-							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
-							if powerInputBits.value()&pc.powerBitMask==0:
-								wlog.error('Error: Computer '+pc.name+' established connection\n'
-								           '   while no power signal is detected. Check your wiring.')
+							# get current operating system
+							pc.currentOS=getComputerOperatingSystemByPartition(pc,partition)
+							if pc.currentOS==None:
+								wlog.error(pc.name+': Unknown current operating system. Please, update pcconfig.py.')
+								pc.currentOS=noRequestedOS  # provide some safe value to continue
+
+							if pc.requestedOS!=noRequestedOS and pc.requestedOS.name!=pc.currentOS.name:
+
+								# reboot to requested OS
+								if pc.currentOS.name==pc.bootManagerOS:
+									log.info(pc.name+': Requested operating system is '+pc.requestedOS.name+'.')
+									commandList=pc.requestedOS.cmdBootToThisOne
+									log.info(pc.name+': Running command \"'+' '.join(commandList)+'\" to reboot to requested OS.')
+									stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['command']+commandList,protocol=2))
+									if platform=='win32': commandList=['shutdown','/r','/t','1']
+									else: commandList=['/usr/bin/sudo','reboot']
+									stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['command']+commandList,protocol=2))
+
+								# reboot to bootManager OS
+								else:
+									log.info(pc.name+': Requested operating system is '+pc.requestedOS.name+'.')
+									commandList=pc.requestedOS.cmdBootToBootManager
+									log.info(pc.name+': Running command \"'+' '.join(commandList)+'\" to reboot to bootManager OS.')
+									stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['command']+commandList,protocol=2))
+									if platform=='win32': commandList=['shutdown','/r','/t','1']
+									else: commandList=['/usr/bin/sudo','reboot']
+									stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['command']+commandList,protocol=2))
+
+							else:
+
+								# move to ON status
+								# (atomically process the following code block, not doing any await or yield calls!)
+								log.debug(pc.name+': Booted with the correct OS (current: '+pc.currentOS.name+', requested: '+pc.requestedOS.name+').')
+								pc.status=Status.ON
+								pc.requestedOS=noRequestedOS
+								pc.reader=reader
+								pc.writer=writer
+								associatedComputer=pc
+								activeComputerList.append(pc)
+								pc.timeOfLastPingRequest=time.monotonic()
+								pc.timeOfLastPingAnswer=pc.timeOfLastPingRequest
+								r=dataInput.Read(0,powerInputBits)
+								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+								if powerInputBits.value()&pc.powerBitMask==0:
+									wlog.error('Error: Computer '+pc.name+' established connection\n'
+									           '   while no power signal is detected. Check your wiring.')
 
 						else:
 							pass # send stop command here
 
-						log.critical('Computer '+pc.name+' got alive')
 					else:
 						log.critical('Computer '+params[1]+' attempts to announce it is alive,\n'
 						             '   but it is not a registered computer.')
@@ -732,6 +797,25 @@ def getComputer(name):
 		return None
 	else:
 		return pcList[0]
+
+
+def getComputerOperatingSystemByName(pc,osName):
+	if osName==None:
+		return None
+	for os in pc.operatingSystems:
+		for n in os.names:
+			if n.casefold()==osName.casefold():
+				return os
+	return None
+
+
+def getComputerOperatingSystemByPartition(pc,partition):
+	if partition==None or partition=='':
+		return None
+	for os in pc.operatingSystems:
+		if os.partition==partition:
+			return os
+	return None
 
 
 # log handler that sends log messages over the stream back to the client
@@ -934,6 +1018,7 @@ for pc in computerList:
 	pc.status=Status.OFF
 	pc.reader=None
 	pc.writer=None
+	pc.requestedOS=noRequestedOS
 	if computerListText=='': computerListText=pc.name
 	else: computerListText+=', '+pc.name
 	if getComputerStatus(pc,powerInputBits.value())!=Status.OFF:

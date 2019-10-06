@@ -59,8 +59,10 @@ def connectionHandler():
 			try:
 				# send parameters to daemon
 				hostName=socket.gethostname()
-				print('Sending \"Got alive\" message (this computer name: '+hostName+').')
-				stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['Got alive',hostName],protocol=2))
+				if sys.platform=='win32':  partition=format(os.stat("C:\\").st_dev,'X')
+				else:  partition=subprocess.run(['findmnt','/','--output','SOURCE','--noheading'],stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
+				print('Sending \"Got alive\" message (this computer name: '+hostName+', platform: '+sys.platform+', partition: '+partition+').')
+				stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['Got alive',hostName,sys.platform,partition],protocol=2))
 
 				# send the first ping request
 				timeOfLastPingRequest=time.monotonic()
@@ -235,7 +237,7 @@ def pingHandler():
 			data2=struct.pack('!I',len(data3))
 			data=data1+data2+data3
 
-			# feed data to readers
+			# feed data to the reader
 			reader.feed_data(data)
 
 	except asyncio.CancelledError:
