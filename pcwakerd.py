@@ -388,7 +388,7 @@ async def serverConnectionHandler(reader,writer):
 					continue
 
 				# start computer
-				elif params[0]=='start':
+				elif params[0]=='start' or params[0]=='restart':
 					if len(params)==1:
 						wlog.error('Error: No computer specified.')
 					else:
@@ -425,13 +425,28 @@ async def serverConnectionHandler(reader,writer):
 							powerOutputBits|=pc.powerBitMask
 							dataOutput.Write(0,powerOutputBits)
 
-						# in STARTING, do noting
+						# in STARTING, do noting,
+						# operating system to boot is changed if it was specified
 						elif status==Status.STARTING:
-							wlog.info('Computer '+pc.name+' is already starting.')
+							if params[0]=='start':
+								wlog.info('Computer '+pc.name+' is already starting.')
+							elif params[0]=='restart':
+								wlog.info('Computer '+pc.name+' is starting...')
 
 						# in ON, do nothing
 						elif status==Status.ON:
-							wlog.info('Computer '+pc.name+' is already running.')
+							if params[0]=='start':
+								wlog.info('Computer '+pc.name+' is already running.')
+							elif params[0]=='restart':
+								if pc.requestedOS!=noRequestedOS:
+									wlog.info('Computer '+pc.name+' restart requested to '+pc.requestedOS.name+' operating system.')
+								else:
+									wlog.info('Computer '+pc.name+' restart requested without specifying any operating system to boot.')
+								if pc.currentOS.name!=pc.bootManagerOS:
+									commandList=pc.currentOS.cmdBootToBootManager
+									log.info(pc.name+': Running command \"'+' '.join(commandList)+'\" to reboot to bootManager OS.')
+									stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['command']+commandList,protocol=2))
+								stream_write_message(pc.writer,MSG_COMPUTER,pickle.dumps(['restart'],protocol=2))
 
 						# in STOPPING, move to START_AFTER_STOPPED
 						elif status==Status.STOPPING:
@@ -717,8 +732,12 @@ async def serverConnectionHandler(reader,writer):
 								r=dataInput.Read(0,powerInputBits)
 								if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
 								if powerInputBits.value()&pc.powerBitMask==0:
-									wlog.error('Error: Computer '+pc.name+' established connection\n'
-									           '   while no power signal is detected. Check your wiring.')
+									if pc.powerBitMask!=0:
+										wlog.error('Error: Computer '+pc.name+' established connection\n'
+										           '   while no power signal is detected. Check your wiring.')
+									else:
+										wlog.info('Computer '+pc.name+' is not connected by wires to detect its power on/off state.\n'
+										          '   The functionality of pcwaker might be limited on this computer.')
 
 						else:
 							pass # send stop command here

@@ -147,6 +147,20 @@ def connectionHandler():
 							exitRequested=True
 							break
 
+						if params[0]=='restart':
+							print('Scheduling restart in 1 minute...')
+							if sys.platform.startswith('cygwin'):
+								subprocess.call(['shutdown','--reboot','60'])
+							elif sys.platform.startswith('win32'):
+								subprocess.call(['shutdown','-r','-t','60'])
+							elif sys.platform.startswith('linux'):
+								subprocess.call(['/usr/bin/sudo','shutdown','--reboot','+1','pcwaker scheduled shutdown in one minute. Use \"shutdown -c\" to cancel.'])
+							else:
+								print('Error: No restart code for this operating system.')
+							print('Done.')
+							exitRequested=True
+							break
+
 						# execute command on this computer
 						elif params[0]=='command':
 							if len(params)==1:
