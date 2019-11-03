@@ -89,7 +89,7 @@ class pcWestmere:
 	name='cadwork-i1'
 	names=[name,'i1','Westmere']
 	powerBitMask=0x08
-	bootManagerOS='linux' # this must be changed back to 'boot' when booting order is set correctly
+	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6' ,['/home/papoadmin/reboot_to_windows.sh'],[]),
 		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),

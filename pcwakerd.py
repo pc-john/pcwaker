@@ -192,7 +192,8 @@ def getComputerStatus(pc,powerInputBits):
 		pass # not implemented yet
 	else:
 		# all remaining states: on power lost ->OFF
-		if powerInputBits&pc.powerBitMask==0:
+		# but ignore computers that have powerBitMask set to zero (no wires to the computer)
+		if powerInputBits&pc.powerBitMask==0 and pc.powerBitMask!=0:
 			pc.status=Status.OFF
 			pc.requestedOS=noRequestedOS
 
@@ -243,6 +244,16 @@ async def serverConnectionHandler(reader,writer):
 		wlogHandler=ConnectionLogHandler(writer)
 		wlog.addHandler(wlogHandler)
 		wlog.debug('Connection handler started.')
+
+		# set keep-alive on socket
+		s=writer.get_extra_info('socket')
+		if s is None:
+			wlog.error('Can not get socket out of writer. Socket TCP keep-alive parameters will not be set.')
+		else:
+			s.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+			s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPIDLE,6)   # six second before keepalive probes
+			s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPINTVL,1)  # keepalive probes are sent in 1 second interval
+			s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPCNT,4)    # four keepalive probes from 6th to 9th second
 
 		# main loop of the connection
 		while not reader.at_eof():
@@ -1105,7 +1116,7 @@ if args.signal_start_to_parent:
 	os.kill(os.getppid(),signal.SIGHUP)
 
 # create ping task
-pingTask=loop.create_task(pingHandler())
+#pingTask=loop.create_task(pingHandler())
 
 # run main loop
 try:

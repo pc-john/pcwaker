@@ -57,7 +57,17 @@ def connectionHandler():
 
 		try:
 			try:
-				# send parameters to daemon
+				# set keep-alive on socket
+				s=writer.get_extra_info('socket')
+				if s is None:
+					wlog.error('Can not get socket out of writer. Socket TCP keep-alive parameters will not be set.')
+				else:
+					s.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
+					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPIDLE,6)   # six seconds before keepalive probes
+					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPINTVL,1)  # keepalive probes are sent in 1 second interval
+					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPCNT,4)    # four keepalive probes from 6th to 9th second
+
+				# send "Got alive" message to daemon
 				hostName=socket.gethostname()
 				if sys.platform=='win32':  partition=format(os.stat("C:\\").st_dev,'X')
 				else:  partition=subprocess.run(['findmnt','/','--output','SOURCE','--noheading'],stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
@@ -65,9 +75,9 @@ def connectionHandler():
 				stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['Got alive',hostName,sys.platform,partition],protocol=2))
 
 				# send the first ping request
-				timeOfLastPingRequest=time.monotonic()
-				timeOfLastPingAnswer=0
-				stream_write_message(writer,MSG_PING_REQUEST,timeOfLastPingRequest)
+				#timeOfLastPingRequest=time.monotonic()
+				#timeOfLastPingAnswer=0
+				#stream_write_message(writer,MSG_PING_REQUEST,timeOfLastPingRequest)
 
 				# message loop
 				while True:
@@ -314,7 +324,7 @@ def consoleCtrlHandler(signum,func=None):
 # initialization
 loop=asyncio.get_event_loop()
 connectionTask=loop.create_task(connectionHandler())
-pingTask=loop.create_task(pingHandler())
+#pingTask=loop.create_task(pingHandler()) <- This might cause some data connection inconsistency. Probably.
 try:
 	# set line buffering for stdout
 	# (otherwise text is buffered for long time and appears only after flush)
@@ -341,8 +351,8 @@ except asyncio.CancelledError:
 	pass # just catch and ignore the exception
 finally:
 	print("Cleaning up...")
-	pingTask.cancel()
-	loop.run_until_complete(pingTask)
+#	pingTask.cancel()
+#	loop.run_until_complete(pingTask)
 	loop.close()
 
 print('Terminating pcwaker client daemon successfully.')
