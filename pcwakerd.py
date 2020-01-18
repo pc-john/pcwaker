@@ -149,6 +149,7 @@ pingTask=None
 powerInputBits=None
 powerOutputBits=0
 activeComputerList=[]
+startAfterStoppedQueue=asyncio.Queue()
 
 # constants
 class Status:
@@ -189,7 +190,7 @@ def getComputerStatus(pc,powerInputBits):
 		if powerInputBits&pc.powerBitMask!=0:
 			pc.status=Status.STARTING
 	elif pc.status==Status.START_AFTER_STOPPED:
-		pass # not implemented yet
+		pass # do not do anything here as everything is done in startAfterStoppedHandler
 	else:
 		# all remaining states: on power lost ->OFF
 		# but ignore computers that have powerBitMask set to zero (no wires to the computer)
@@ -452,7 +453,7 @@ async def serverConnectionHandler(reader,writer):
 						elif status==Status.STOPPING:
 							wlog.info('Computer '+pc.name+' is shutting down. It will be started after shutdown.')
 							pc.status=Status.START_AFTER_STOPPED
-							# activate periodical state checker here
+							startAfterStoppedQueue.put_nowait(pc)
 
 						# in START_AFTER_STOPPED, do nothing
 						elif status==Status.START_AFTER_STOPPED:
@@ -555,7 +556,6 @@ async def serverConnectionHandler(reader,writer):
 						elif status==Status.START_AFTER_STOPPED:
 							wlog.info('Computer '+pc.name+' is scheduled to start after shutdown. Cancelling start.')
 							pc.status=Status.STOPPING
-							# deactivate periodical state checker here
 
 						# in STOP_AFTER_STARTED, do noting
 						elif status==Status.STOP_AFTER_STARTED:
@@ -740,7 +740,9 @@ async def serverConnectionHandler(reader,writer):
 										          '   The functionality of pcwaker might be limited on this computer.')
 
 						else:
-							pass # send stop command here
+							wlog.info('Computer '+pc.name+' is in STOP_AFTER_STARTED state. Stopping it...')
+							stream_write_message(writer,MSG_COMPUTER,pickle.dumps(['shutdown'],protocol=2))
+							pc.status=Status.STOPPING
 
 					else:
 						log.critical('Computer '+params[1]+' attempts to announce it is alive,\n'
@@ -792,6 +794,107 @@ async def serverConnectionHandler(reader,writer):
 		if wlog!=shutdownLog or wlog==None:
 			writer.close()
 		wlog.debug('Connection handler terminated.')
+
+
+async def startAfterStoppedHandler():
+
+	global powerOutputBits
+
+	while True:
+
+		# get computer
+		log.info('Entering await in startAfterStopped handler.')
+		pc=await startAfterStoppedQueue.get()
+		log.info('Queueing computer '+pc.name+' for startAfterStopped procedure.')
+		q1=[pc]
+		q2=[]
+		q3=[]
+
+		while True:
+
+			# get all computers from startAfterStoppedQueue
+			while not startAfterStoppedQueue.empty():
+				pc=startAfterStoppedQueue.get_nowait()
+				if not pc in q1:
+					q1.append(pc)
+				log.info('Queueing computer '+pc.name+' for startAfterStopped procedure.')
+
+			# update status of all computers in q
+			r=dataInput.Read(0,powerInputBits)
+			if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+			for pc in q1:
+
+				# remove computers that changed status from START_AFTER_STOPPED
+				status=getComputerStatus(pc,powerInputBits.value())
+				if status!=Status.START_AFTER_STOPPED:
+					q1.remove(pc)
+					log.info('Unqueueing computer '+pc.name+' from startAfterStopped procedure.')
+				else:
+
+					# detect power off
+					if powerInputBits.value()&pc.powerBitMask==0:
+						q1.remove(pc)
+						if not pc in q2:
+							q2.append(pc)
+							q3.append(3000)  # wait 3s
+							log.info('Computer '+pc.name+' is now switched off in startAfterStopped procedure.')
+
+			# wait three seconds and power computer on
+			for i in range(len(q3)):
+				d=q3[i]-500
+				q3[i]=d
+				if d<0:
+
+					# remove computer from queue
+					pc=q2.pop(i)
+					del q3[i]
+
+					if pc.status==Status.START_AFTER_STOPPED:
+
+						# test if computer is still unpowered
+						r=dataInput.Read(0,powerInputBits)
+						if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+						if powerInputBits.value()&pc.powerBitMask!=0:
+
+							# somebody powered computer in between
+							pc.status=Status.STARTING
+
+						else:
+
+							# start computer
+							log.info('Starting computer '+pc.name+' in startAfterStopped procedure...')
+							powerOutputBits|=pc.powerBitMask
+							dataOutput.Write(0,powerOutputBits)
+							await asyncio.sleep(0.5)
+
+							# if OFF, deactivate power signal after 0.5 second
+							powerOutputBits&=~pc.powerBitMask
+							dataOutput.Write(0,powerOutputBits)
+
+							# update computer state
+							r=dataInput.Read(0,powerInputBits)
+							if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+
+							# if still did not came up, give it three times another 0.5 second
+							for i in [1,2,3]:
+								if powerInputBits.value()&pc.powerBitMask==0:
+									await asyncio.sleep(0.5)
+
+									# test again if it came up
+									r=dataInput.Read(0,powerInputBits)
+									if r!=0: raise OSError(r,'USB-4761 device error (error code: '+hex(r)+').')
+
+							if powerInputBits.value()&pc.powerBitMask==0:
+								pc.status=Status.OFF
+								log.info('Computer '+pc.name+' failed to start (state OFF) and left startAfterStopped procedure.')
+							else:
+								pc.status=Status.STARTING
+								log.info('Computer '+pc.name+' is now STARTING and left startAfterStopped procedure.')
+
+			if q1 or q2: # non-empty lists
+				await asyncio.sleep(0.5)  # sleep 500ms
+			else:
+				break
 
 
 async def pingHandler():
@@ -1134,8 +1237,9 @@ if args.init_print_log:
 if args.signal_start_to_parent:
 	os.kill(os.getppid(),signal.SIGHUP)
 
-# create ping task
+# create tasks
 #pingTask=loop.create_task(pingHandler())
+startAfterStoppedTask=loop.create_task(startAfterStoppedHandler())
 
 # run main loop
 try:
