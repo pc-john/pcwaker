@@ -22,11 +22,11 @@ class OperatingSystem:
 class pcCoffeeLake:
 	name='cadwork-i9'
 	names=[name,'i9','CoffeeLake']
-	powerBitMask=0x0
+	powerBitMask=0x40
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0004']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/nvme0n1p7',[],[]),
 	]
 
