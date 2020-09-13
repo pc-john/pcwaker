@@ -26,7 +26,7 @@ class pcCoffeeLake:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0004']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/nvme0n1p7',[],[]),
 	]
 
@@ -37,7 +37,7 @@ class pcZen1:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/nvme0n1p7',[],[]),
 	]
 
@@ -48,7 +48,18 @@ class pcXeon5:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
+		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/nvme0n1p7',[],[]),
+	]
+
+class pcBroadwell:
+	name='cadwork-i5'
+	names=[name,'i5','Broadwell']
+	powerBitMask=0
+	bootManagerOS='boot'
+	operatingSystems=[
+		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/nvme0n1p5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/nvme0n1p7',[],[]),
 	]
 
@@ -59,8 +70,8 @@ class pcHaswell:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6' ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
-		OperatingSystem('boot' ,['boot']                         ,'/dev/sda7',[],[]),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
+		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/sda7',[],[]),
 	]
 
 class pcIvyBridge:
@@ -70,7 +81,7 @@ class pcIvyBridge:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6' ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/sda7',[],[]),
 	]
 
@@ -81,7 +92,7 @@ class pcSandyBridge:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6' ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/sda7',[],[]),
 	]
 
@@ -92,7 +103,7 @@ class pcWestmere:
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6' ,['/home/papoadmin/reboot_to_windows.sh'],[]),
-		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','efibootmgr','--bootnext','0003']),
+		OperatingSystem('linux',['linux','ubuntu','kubuntu']     ,'/dev/sda5',['/home/papoadmin/reboot_to_linux.sh'  ],['/usr/bin/sudo','reboot']),
 		OperatingSystem('boot' ,['boot','rescue']                ,'/dev/sda7',[],[]),
 	]
 
@@ -106,4 +117,4 @@ class pcP4:
 	names=[name,'p4','P4']
 	powerBitMask=0x0 # not connected now
 
-computerList=[pcCoffeeLake,pcZen1,pcXeon5,pcHaswell,pcIvyBridge,pcSandyBridge,pcWestmere,pcCore2,pcP4]
+computerList=[pcCoffeeLake,pcZen1,pcXeon5,pcBroadwell,pcHaswell,pcIvyBridge,pcSandyBridge,pcWestmere,pcCore2,pcP4]
