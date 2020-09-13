@@ -63,9 +63,14 @@ def connectionHandler():
 					wlog.error('Can not get socket out of writer. Socket TCP keep-alive parameters will not be set.')
 				else:
 					s.setsockopt(socket.SOL_SOCKET,socket.SO_KEEPALIVE,1)
-					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPIDLE,6)   # six seconds before keepalive probes
-					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPINTVL,1)  # keepalive probes are sent in 1 second interval
-					s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPCNT,4)    # four keepalive probes from 6th to 9th second
+					if hasattr(socket, "TCP_KEEPIDLE") and hasattr(socket, "TCP_KEEPINTVL") and hasattr(socket, "TCP_KEEPCNT"):
+						# not all settings are always available, especially on Windows:
+						# TCP_KEEPCNT was introduced by Windows 10, version 1703
+						# TCP_KEEPINTVL was introduced by Windows 10, version 1709
+						# TCP_KEEPIDLE was indroduced by Windows 10, version 1709
+						s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPIDLE,6)   # six seconds before keepalive probes
+						s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPINTVL,1)  # keepalive probes are sent in 1 second interval
+						s.setsockopt(socket.IPPROTO_TCP,socket.TCP_KEEPCNT,4)    # four keepalive probes from 6th to 9th second
 
 				# send "Got alive" message to daemon
 				hostName=socket.gethostname()
