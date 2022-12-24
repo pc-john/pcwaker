@@ -55,7 +55,7 @@ class pcXeon5:
 class pcBroadwell:
 	name='cadwork-i5'
 	names=[name,'i5','Broadwell']
-	powerBitMask=0
+	powerBitMask=0x80
 	bootManagerOS='boot'
 	operatingSystems=[
 		OperatingSystem('win'  ,['win','win10','windows','win32'],'EE10A1B6'      ,['/home/papoadmin/reboot_to_windows.sh'],[]),

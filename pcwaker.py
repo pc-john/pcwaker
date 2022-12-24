@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.5
+#!/usr/bin/env python3
 
 import asyncio
 import os
@@ -18,7 +18,7 @@ async def clientConnectionHandler(message):
 	if debug:
 		print('Connecting to port '+str(port)+'...')
 	try:
-		reader,writer=await asyncio.open_connection('127.0.0.1',port,loop=loop)
+		reader,writer=await asyncio.open_connection('127.0.0.1',port)
 	except ConnectionRefusedError as e:
 		if len(sys.argv)>=3 and sys.argv[1]=='daemon' and sys.argv[2]=='stop':
 			print('Daemon process already stopped.')
@@ -158,6 +158,7 @@ message=sys.argv[1:]
 # run main loop
 loop = asyncio.get_event_loop()
 loop.run_until_complete(clientConnectionHandler(message))
+
 loop.close()
 
 

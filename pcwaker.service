@@ -4,8 +4,8 @@ After=network.target syslog.target
 
 [Service]
 Type=forking
-User=pi
-Group=pi
+User=root
+Group=root
 ExecStart=/pcwaker/pcwaker.py daemon start
 ExecStop =/pcwaker/pcwaker.py daemon stop
 

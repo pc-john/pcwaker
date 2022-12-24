@@ -47,7 +47,7 @@ def connectionHandler():
 		# open connection
 		print('Connecting to the server '+pcwakerServerAddress[0]+':'+str(pcwakerServerAddress[1])+'...')
 		try:
-			reader,writer=yield from asyncio.open_connection(pcwakerServerAddress[0],port=pcwakerServerAddress[1],loop=loop)
+			reader,writer=yield from asyncio.open_connection(pcwakerServerAddress[0],port=pcwakerServerAddress[1])
 		except (ConnectionRefusedError,OSError) as e:
 			print('Can not connect to '+pcwakerServerAddress[0]+':'+str(pcwakerServerAddress[1])+
 			      '. Will try again in 30 seconds...')
